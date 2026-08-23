@@ -1233,10 +1233,11 @@ class RecipientPickerDialog(QDialog):
             '收件人文件 (*.xlsx *.xls *.txt);;所有文件 (*)')
         if not path:
             return
-        # 解析收件人（业务逻辑在 activity 层），文件类型不支持等异常在此兜底提示
+        # 解析收件人（业务逻辑在 activity 层）；文件类型不支持、解析依赖缺失等均在
+        # 此处兜底捕获并提示，避免在 modal 对话框事件循环里抛裸异常导致程序崩溃
         try:
             recipients = self._loadRecipientsFromFile(path)
-        except ValueError as exc:
+        except (ValueError, ImportError) as exc:
             QMessageBox.warning(self, '解析失败', str(exc))
             return
         self.setRecipients(recipients)
