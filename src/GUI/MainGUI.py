@@ -50,6 +50,8 @@ from activity.recipient_bulk import (
     mergeRecipients,
     sortRecipients,
     filterRecipients,
+    splitRecipients,
+    validateRecipients,
 )
 from activity.mail_query import queryEmails
 
@@ -1404,6 +1406,191 @@ class RecipientPickerDialog(QDialog):
         self.clear_all_btn.setEnabled(has_items)
 
 
+class RecipientManageDialog(QDialog):
+    """查看/管理所有收件人对话框：应对收件人过多时输入框显示不全的问题
+
+    与输入框维护「同一个」收件人集合：
+      - 打开时从输入框文本即时拆分（activity.splitRecipients），保证列表与输入框一致；
+      - 支持排序、搜索、全选/取消、逐项勾选取消；
+      - 非法片段（用户手误删除字符导致）在列表中标红展示；
+      - 确定后把仍勾选的结果回写输入框（activity 层拼接），从而：
+          输入框里删掉的内容不会残留到列表；列表里取消勾选的内容也不会残留到输入框。
+
+    业务逻辑（拆分/校验/排序/过滤/拼接）均收敛在 activity.recipient_bulk。
+    """
+
+    def __init__(self, parent=None):
+        """初始化查看/管理收件人对话框"""
+        super().__init__(parent)
+        self.setWindowTitle('查看所有收件人')
+        self.resize(440, 520)
+        # 输入框拆分出的全部片段（含非法项，保持顺序）
+        self.all_tokens = []
+        # 非法片段集合（标红用）：手误导致的不完整邮箱
+        self.invalid_set = set()
+        # 仍勾选的片段集合（跨排序/筛选保持）
+        self.selected_items = set()
+
+        v = QVBoxLayout(self)
+        v.setSpacing(8)
+
+        # 顶部提示
+        tip = QLabel('以下为收件人输入框中的所有收件人，可勾选/取消，确定后回写输入框。')
+        tip.setStyleSheet('color:#666;')
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+
+        # 排序 + 搜索工具栏
+        tool_row = QHBoxLayout()
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItem('原始顺序', False)
+        self.sort_combo.addItem('按首字母 A-Z', True)
+        self.sort_combo.currentIndexChanged.connect(self._renderList)
+        tool_row.addWidget(QLabel('排序:'))
+        tool_row.addWidget(self.sort_combo)
+        tool_row.addSpacing(8)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText('输入字符筛选邮箱…')
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._renderList)
+        tool_row.addWidget(self.search_edit, 1)
+        v.addLayout(tool_row)
+
+        # 可勾选列表
+        self.recipient_list = QListWidget()
+        self.recipient_list.itemChanged.connect(self._onItemToggled)
+        v.addWidget(self.recipient_list)
+
+        # 全选 / 取消全选
+        op_row = QHBoxLayout()
+        self.select_all_btn = QPushButton('全选')
+        self.select_all_btn.clicked.connect(lambda: self._setAllChecked(True))
+        self.clear_all_btn = QPushButton('取消全选')
+        self.clear_all_btn.clicked.connect(lambda: self._setAllChecked(False))
+        op_row.addWidget(self.select_all_btn)
+        op_row.addWidget(self.clear_all_btn)
+        op_row.addStretch()
+        self.count_label = QLabel('已勾选 0 / 共 0')
+        op_row.addWidget(self.count_label)
+        v.addLayout(op_row)
+
+        # 确定 / 取消
+        bottom = QHBoxLayout()
+        bottom.addStretch()
+        confirm_btn = QPushButton('确定')
+        confirm_btn.setStyleSheet('QPushButton{background:#1b7bf2;color:#fff;border:0;'
+                                  'padding:6px 20px;border-radius:4px;}')
+        confirm_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton('取消')
+        cancel_btn.clicked.connect(self.reject)
+        bottom.addWidget(confirm_btn)
+        bottom.addWidget(cancel_btn)
+        v.addLayout(bottom)
+
+        self._updateButtons()
+
+    # ---------------- 数据填充 —— 与输入框保持同一集合 ----------------
+
+    def loadFromText(self, text):
+        """从输入框文本载入收件人（即时拆分）并默认全选，标记非法项
+
+        参数：
+            text<str>：输入框当前文本
+        """
+        self.all_tokens = splitRecipients(text)
+        valid, invalid = validateRecipients(self.all_tokens)
+        self.invalid_set = set(invalid)
+        # 默认全选（包含非法项也默认勾选，便于用户自行取消）
+        self.selected_items = set(self.all_tokens)
+        # 重置排序/搜索
+        self.sort_combo.blockSignals(True)
+        self.sort_combo.setCurrentIndex(0)
+        self.sort_combo.blockSignals(False)
+        self.search_edit.blockSignals(True)
+        self.search_edit.clear()
+        self.search_edit.blockSignals(False)
+        self._renderList()
+
+    # ---------------- 展示 ----------------
+
+    def _renderList(self):
+        """按 排序 + 搜索 重渲染列表（非法项标红，保持勾选状态）"""
+        self.recipient_list.itemChanged.disconnect(self._onItemToggled)
+        self.recipient_list.clear()
+
+        keyword = self.search_edit.text()
+        kw = keyword.strip().lower()
+        # 过滤 + 排序（业务逻辑在 activity）
+        pool = [t for t in self.all_tokens if t.lower().find(kw) >= 0] if kw else list(self.all_tokens)
+        if self.sort_combo.currentData():
+            pool = sortRecipients(pool, by_letter=True)
+        for tok in pool:
+            item = QListWidgetItem(tok)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if tok in self.selected_items
+                               else Qt.CheckState.Unchecked)
+            # 非法片段标红提示
+            if tok in self.invalid_set:
+                item.setForeground(QColor('#d93025'))  # 红色
+            self.recipient_list.addItem(item)
+
+        self.recipient_list.itemChanged.connect(self._onItemToggled)
+        self._updateCount()
+        self._updateButtons()
+
+    # ---------------- 勾选状态管理 ----------------
+
+    def _onItemToggled(self, item):
+        """勾选变化：同步勾选集合，刷新计数"""
+        tok = item.text()
+        if item.checkState() == Qt.CheckState.Checked:
+            self.selected_items.add(tok)
+        else:
+            self.selected_items.discard(tok)
+        self._updateCount()
+
+    def _setAllChecked(self, checked):
+        """全选/取消全选（作用于当前筛选后可见项）"""
+        for i in range(self.recipient_list.count()):
+            item = self.recipient_list.item(i)
+            if checked:
+                self.selected_items.add(item.text())
+                item.setCheckState(Qt.CheckState.Checked)
+            else:
+                self.selected_items.discard(item.text())
+                item.setCheckState(Qt.CheckState.Unchecked)
+        self._updateCount()
+
+    def getCheckedText(self):
+        """返回确定时回写输入框用的拼接文本（按当前勾选、去重、分号分隔）
+
+        返回：
+            str：回写文本；无勾选项时为空串
+        """
+        # 按原始顺序保留勾选项；用 activity.mergeRecipients 风格拼接（分号）
+        return '; '.join(t for t in self.all_tokens if t in self.selected_items)
+
+    def hasInvalid(self):
+        """是否存在非法邮箱（供打开时弹窗提示）
+
+        返回：
+            list<str>：非法片段列表
+        """
+        return sorted(self.invalid_set, key=lambda s: s.lower())
+
+    def _updateCount(self):
+        """刷新计数文案（已勾选/当前可见）"""
+        total = self.recipient_list.count()
+        checked = len(self.selected_items)
+        self.count_label.setText('已勾选 %d / 共 %d' % (checked, total))
+
+    def _updateButtons(self):
+        """列表为空时禁用全选/取消全选"""
+        has_items = self.recipient_list.count() > 0
+        self.select_all_btn.setEnabled(has_items)
+        self.clear_all_btn.setEnabled(has_items)
+
+
 class NormalPage(QWidget):
     """普通模式发信页：仿 QQ 邮箱网页版写邮件界面
 
@@ -1603,6 +1790,15 @@ class NormalPage(QWidget):
                                               'QPushButton:hover{background:#e6efff;}')
         self.pick_recipient_btn.clicked.connect(self.onPickRecipients)
         row1.addWidget(self.pick_recipient_btn)
+        # 查看所有收件人按钮：收件人过多输入框显示不全时，打开管理对话框查看/勾选
+        self.manage_recipient_btn = QPushButton('查看所有收件人')
+        self.manage_recipient_btn.setToolTip('收件人过多时查看/勾选管理，确定后回写输入框')
+        self.manage_recipient_btn.setStyleSheet('QPushButton{background:#f5f7fa;color:#1a73e8;'
+                                                'border:1px solid #d0d7de;padding:4px 10px;'
+                                                'border-radius:4px;}'
+                                                'QPushButton:hover{background:#e6efff;}')
+        self.manage_recipient_btn.clicked.connect(self.onManageRecipients)
+        row1.addWidget(self.manage_recipient_btn)
         # 右侧可点击「抄送」「密送」「分别发送」标签
         self.cc_link = QLabel('<a href="#" style="text-decoration:none;color:#666;">抄送</a>')
         self.cc_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
@@ -1685,6 +1881,35 @@ class NormalPage(QWidget):
             return
         # 合并业务委托 activity 层：保留已有 + 新增勾选（去重、滤空），分号分隔
         self.to_edit.setText(mergeRecipients(self.to_edit.text(), selected))
+
+    def onManageRecipients(self):
+        """打开「查看所有收件人」对话框管理当前收件人，确定后回写输入框
+
+        与输入框维护同一收件人集合：
+          - 打开时从输入框文本即时拆分（activity.splitRecipients），保证列表一致；
+          - 存在非法邮箱时弹窗提示并标红；
+          - 确定后仅把仍勾选的结果回写输入框，从而列表取消项不会残留、
+            输入框删除项也不会残留到列表。
+        """
+        text = self.to_edit.text().strip()
+        if not text:
+            QMessageBox.information(self, '查看所有收件人', '收件人框当前为空，无需管理。')
+            return
+        dlg = RecipientManageDialog(self)
+        dlg.loadFromText(text)
+        # 检测到非法邮箱时弹窗提示用户（输入框可能因手误删出非法字符）
+        invalid = dlg.hasInvalid()
+        if invalid:
+            QMessageBox.warning(
+                self, '存在非法邮箱',
+                '检测到 %d 个非法收件人（已标红）：\n%s\n\n确定后仍会保留它们，'
+                '请在列表取消勾选或回到输入框修正。'
+                % (len(invalid), '\n'.join('- ' + s for s in invalid)))
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        # 回写仍勾选的结果（单一数据源仍是输入框，避免双向不一致）
+        result = dlg.getCheckedText()
+        self.to_edit.setText(result)
 
     def toggleCcArea(self):
         """切换抄送输入行的显示/隐藏"""

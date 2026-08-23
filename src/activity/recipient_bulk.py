@@ -175,6 +175,43 @@ def _dedupKeepOrder(items):
     return result
 
 
+def splitRecipients(text):
+    """按分隔符拆分收件人输入框文本为片段列表（滤空、去两侧空白）
+
+    单一数据源约定：输入框文本是收件人的唯一事实来源，所有「查看/管理」操作
+    都以拆分结果为基准，避免输入框与列表状态不一致。
+
+    参数：
+        text<str>：收件人输入框当前文本
+
+    返回：
+        list<str>：非空片段列表（仍保持原始顺序）
+    """
+    if not text:
+        return []
+    return [tok.strip() for tok in SEPARATOR_RE.split(text) if tok.strip()]
+
+
+def validateRecipients(tokens):
+    """校验一组收件人片段，区分为合法与非法两类
+
+    用于识别用户手误删除字符导致的非法邮箱，便于上层标红提示。
+
+    参数：
+        tokens<list<str>>：收件人片段列表
+
+    返回：
+        tuple<list<str>, list<str>>：(合法邮箱列表, 非法片段列表)，均保持原始顺序
+    """
+    valid, invalid = [], []
+    for tok in tokens:
+        if isValidEmail(tok):
+            valid.append(tok)
+        else:
+            invalid.append(tok)
+    return valid, invalid
+
+
 def mergeRecipients(current_text, selected):
     """合并已有收件人文本与勾选新增收件人，返回合并后的收件人串
 
