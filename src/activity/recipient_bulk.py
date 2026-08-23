@@ -62,9 +62,10 @@ def parseRecipientFile(path):
     ext = os.path.splitext(path)[1].lower()
     if ext in ('.xlsx', '.xls'):
         return _parseExcel(path)
-    if ext == '.txt':
+    if ext in ('.txt', '.csv'):
+        # TXT 与 CSV 均为按分隔符逐行读取的文本，走同一套提取逻辑
         return _parseTxt(path)
-    raise ValueError('不支持的文件类型：%s（仅支持 Excel/TXT）' % ext)
+    raise ValueError('不支持的文件类型：%s（仅支持 Excel/CSV/TXT）' % ext)
 
 
 def _parseTxt(path):
@@ -104,25 +105,26 @@ def _parseExcel(path):
 
 
 def _parseXlsx(path):
-    """解析 .xlsx：使用 openpyxl 读取整个首表所有单元格值并提取邮箱
+    """解析 .xlsx：使用 openpyxl 读取所有工作表全部单元格值并提取邮箱
 
     参数：
         path<str>：xlsx 文件路径
 
     返回：
-        list<str>：单元格中提取出的邮箱列表
+        list<str>：单元格中提取出的邮箱列表（跨 sheet 汇总）
     """
     import openpyxl
     found = []
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
-        ws = wb.worksheets[0]
-        for row in ws.iter_rows(values_only=True):
-            for cell in row or ():
-                if cell is None:
-                    continue
-                text = str(cell).strip()
-                found.extend(extractEmails(text))
+        # 遍历所有工作表（sheet），避免邮箱分布在非首个 sheet 时漏读
+        for ws in wb.worksheets:
+            for row in ws.iter_rows(values_only=True):
+                for cell in row or ():
+                    if cell is None:
+                        continue
+                    text = str(cell).strip()
+                    found.extend(extractEmails(text))
     finally:
         wb.close()
     return found
@@ -141,14 +143,15 @@ def _parseXls(path):
     try:
         import xlrd
         wb = xlrd.open_workbook(path)
-        ws = wb.sheet_by_index(0)
-        for r in range(ws.nrows):
-            for c in range(ws.ncols):
-                val = ws.cell_value(r, c)
-                if val is None:
-                    continue
-                text = str(val).strip()
-                found.extend(extractEmails(text))
+        # 遍历所有工作表，避免邮箱分布在非首个 sheet 时漏读
+        for ws in wb.sheets():
+            for r in range(ws.nrows):
+                for c in range(ws.ncols):
+                    val = ws.cell_value(r, c)
+                    if val is None:
+                        continue
+                    text = str(val).strip()
+                    found.extend(extractEmails(text))
     except ImportError:
         # xlrd 未安装时给出更友好的提示
         raise ValueError('解析旧版 .xls 需要安装 xlrd 库；建议另存为 .xlsx 后重新选择。')
