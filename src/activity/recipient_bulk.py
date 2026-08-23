@@ -8,18 +8,16 @@
 import os
 import re
 
-# 常见顶部非邮箱行忽略阈值：文件前 N 行若不含邮箱则跳过表头/说明
-SKIP_EMPTY_THRESHOLD = 0
-# 简易邮箱正则：匹配常见邮箱格式（用于识别单元格中是否为邮箱）
-EMAIL_RE = re.compile(
-    r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+# 常用邮箱分隔符（逗号/分号/制表符/换行）用于拆分“一行含多个邮箱”的场景
+SEPARATOR_RE = re.compile(r'[,;\t，；]+')
+# 邮箱提取正则：从任意文本中匹配邮箱地址（可同时命中单元格中多个邮箱）
+EMAIL_FIND_RE = re.compile(
+    r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
 )
-# 收件人分隔正则：匹配英文/中文逗号与分号（用于拆分收件人输入串）
-SEPARATOR_RE = re.compile(r'[,;，；]+')
 
 
 def isValidEmail(text):
-    """判断字符串是否为合法邮箱地址
+    """判断字符串是否完全等于一个合法邮箱地址
 
     参数：
         text<str>：待校验字符串
@@ -27,14 +25,28 @@ def isValidEmail(text):
     返回：
         bool：是否为合法邮箱
     """
-    return bool(EMAIL_RE.match(text.strip()))
+    return bool(EMAIL_FIND_RE.fullmatch(text.strip()))
+
+
+def extractEmails(text):
+    """从任意文本中提取所有邮箱地址（可命中一行/一格内的多个邮箱）
+
+    参数：
+        text<str>：原始文本
+
+    返回：
+        list<str>：提取出的邮箱列表（保持出现顺序，不做去重）
+    """
+    if not text:
+        return []
+    return EMAIL_FIND_RE.findall(text)
 
 
 def parseRecipientFile(path):
     """从 Excel(*.xlsx/*.xls) 或 TXT 文件读取并识别所有收件人邮箱
 
-    约定：文件内只应包含收件人邮箱，读取后逐格扫描，仅保留合法邮箱；
-          非邮箱文本（表头/说明/空行）自动忽略。
+    约定：建议用户在文件内只放置收件人邮箱；即使误混入表头/说明文字，
+          也会自动提取其中的邮箱、忽略其余内容。识别结果去重、保持顺序。
 
     参数：
         path<str>：收件人文件路径
@@ -56,7 +68,7 @@ def parseRecipientFile(path):
 
 
 def _parseTxt(path):
-    """解析 TXT：逐行读取，从中识别合法邮箱
+    """解析 TXT：逐行提取邮箱（一行可能含多个用分隔符隔开的邮箱）
 
     参数：
         path<str>：TXT 文件路径
@@ -67,14 +79,14 @@ def _parseTxt(path):
     emails = []
     with open(path, 'r', encoding='utf-8', errors='ignore') as fobj:
         for line in fobj:
-            token = line.strip()
-            if isValidEmail(token):
-                emails.append(token)
+            # 按分隔符拆分后逐段提取邮箱，避免同一行内多个邮箱被合并吞掉
+            for seg in SEPARATOR_RE.split(line):
+                emails.extend(extractEmails(seg))
     return _dedupKeepOrder(emails)
 
 
 def _parseExcel(path):
-    """解析 Excel(*.xlsx/*.xls)：读取首张工作表所有单元格，识别合法邮箱
+    """解析 Excel(*.xlsx/*.xls)：读取首张工作表所有单元格，提取邮箱
 
     参数：
         path<str>：Excel 文件路径
@@ -92,13 +104,13 @@ def _parseExcel(path):
 
 
 def _parseXlsx(path):
-    """解析 .xlsx：使用 openpyxl 读取整个首表所有单元格值
+    """解析 .xlsx：使用 openpyxl 读取整个首表所有单元格值并提取邮箱
 
     参数：
         path<str>：xlsx 文件路径
 
     返回：
-        list<str>：单元格中识别出的邮箱列表
+        list<str>：单元格中提取出的邮箱列表
     """
     import openpyxl
     found = []
@@ -109,10 +121,8 @@ def _parseXlsx(path):
             for cell in row or ():
                 if cell is None:
                     continue
-                # 兼容单元格为数字（如邮箱写成文本时才为字符串；数字单元格填数字串忽略）
                 text = str(cell).strip()
-                if isValidEmail(text):
-                    found.append(text)
+                found.extend(extractEmails(text))
     finally:
         wb.close()
     return found
@@ -138,8 +148,7 @@ def _parseXls(path):
                 if val is None:
                     continue
                 text = str(val).strip()
-                if isValidEmail(text):
-                    found.append(text)
+                found.extend(extractEmails(text))
     except ImportError:
         # xlrd 未安装时给出更友好的提示
         raise ValueError('解析旧版 .xls 需要安装 xlrd 库；建议另存为 .xlsx 后重新选择。')
