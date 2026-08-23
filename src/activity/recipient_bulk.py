@@ -188,3 +188,34 @@ def mergeRecipients(current_text, selected):
     existing = [tok for tok in (t.strip() for t in SEPARATOR_RE.split(current_text)) if tok]
     new_part = [e for e in selected if e not in existing]
     return '; '.join(existing + new_part)
+
+
+def sortRecipients(emails, by_letter=False):
+    """按首字母（A-Z，不区分大小写）对收件人列表排序
+
+    参数：
+        emails<list<str>>：收件人邮箱列表
+        by_letter<bool>：True 按首字母排序；False 保持原顺序
+
+    返回：
+        list<str>：排序后的列表
+    """
+    if not by_letter:
+        return list(emails)
+    return sorted(emails, key=lambda e: e.lower())
+
+
+def filterRecipients(emails, keyword=''):
+    """按关键字筛选收件人，保留包含该关键字（忽略大小写）的邮箱
+
+    参数：
+        emails<list<str>>：收件人邮箱列表
+        keyword<str>：筛选关键字；为空时返回全部
+
+    返回：
+        list<str>：筛选中含关键字的邮箱列表
+    """
+    kw = (keyword or '').strip()
+    if not kw:
+        return list(emails)
+    return [e for e in emails if kw.lower() in e.lower()]

@@ -45,7 +45,12 @@ from database import (
     CATEGORY_DELETED,
 )
 # UI 按钮响应之后的业务逻辑收敛在 activity 包中，界面层仅负责调用
-from activity.recipient_bulk import parseRecipientFile, mergeRecipients
+from activity.recipient_bulk import (
+    parseRecipientFile,
+    mergeRecipients,
+    sortRecipients,
+    filterRecipients,
+)
 from activity.mail_query import queryEmails
 
 # 发件人昵称默认值（发件人昵称输入框留空时使用）
@@ -1152,23 +1157,29 @@ class MailListPage(QWidget):
 class RecipientPickerDialog(QDialog):
     """收件人选择器（群发功能）：选择收件人 Excel/TXT 文件并让用户勾选收件人
 
-    现阶段仅实现 UI：
+    UI 能力：
       - 「选择文件」按钮弹出文件对话框（*.xlsx / *.xls / *.txt）
       - 收件人以可勾选的列表展示，支持 全选 / 取消全选
+      - 按首字母排序（A-Z，忽略大小写）
+      - 关键字搜索：输入字符即时筛选出包含该字符的邮箱
       - 底部显示「已勾选 N / 共 M」
       - 确定后返回勾选的收件人邮箱列表
 
-    说明：文件读取与自动识别收件人的逻辑为占位（_loadRecipientsFromFile 返回空），
-          待后续接入解析 API 后再填充。
+    说明：文件识别、排序、过滤等业务逻辑均收敛在 activity.recipient_bulk，
+          本类仅负责界面交互与调用。
     """
 
     def __init__(self, parent=None):
         """初始化收件人选择器对话框"""
         super().__init__(parent)
         self.setWindowTitle('收件人选择（群发）')
-        self.resize(420, 460)
-        # 当前已识别出的全部收件人列表（字符串邮箱）
+        self.resize(420, 520)
+        # 当前已识别出的全部收件人列表（字符串邮箱，保持解析顺序）
         self.all_recipients = []
+        # 已勾选的邮箱集合（跨排序/筛选切换时保持勾选状态）
+        self.selected_emails = set()
+        # 当前排序开关：True=按首字母；False=原始顺序
+        self.sort_by_letter = False
 
         v = QVBoxLayout(self)
         v.setSpacing(8)
@@ -1185,6 +1196,23 @@ class RecipientPickerDialog(QDialog):
         pick_btn.clicked.connect(self.onPickFile)
         top.addWidget(pick_btn)
         v.addLayout(top)
+
+        # 排序 + 搜索工具栏
+        tool_row = QHBoxLayout()
+        sort_label = QLabel('排序:')
+        tool_row.addWidget(sort_label)
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItem('原始顺序', False)
+        self.sort_combo.addItem('按首字母 A-Z', True)
+        self.sort_combo.currentIndexChanged.connect(self._onSortChanged)
+        tool_row.addWidget(self.sort_combo)
+        tool_row.addSpacing(8)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText('输入字符筛选邮箱…')
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._onSearchChanged)
+        tool_row.addWidget(self.search_edit, 1)
+        v.addLayout(tool_row)
 
         # 收件人可勾选列表
         self.recipient_list = QListWidget()
@@ -1255,52 +1283,102 @@ class RecipientPickerDialog(QDialog):
         return parseRecipientFile(path)
 
     def setRecipients(self, recipients):
-        """用识别出的收件人填充可勾选列表（默认全部勾选）
+        """用识别出的收件人填充列表（默认全部勾选），并重置排序/搜索为原始
 
         参数：
             recipients<list<str>>：收件人邮箱列表
         """
-        # 先断开信号避免填充过程触发统计
+        self.all_recipients = list(recipients or [])
+        # 初次载入：默认全选（清空旧的勾选记录并全部勾选）
+        self.selected_emails = set(self.all_recipients)
+        # 重置排序与搜索状态
+        self.sort_by_letter = False
+        self._setComboSilent(0)
+        self.search_edit.blockSignals(True)
+        self.search_edit.clear()
+        self.search_edit.blockSignals(False)
+        self._renderList()
+
+    def _setComboSilent(self, index):
+        """不触发回调地切换排序下拉的选中项
+
+        参数：
+            index<int>：目标下拉索引
+        """
+        self.sort_combo.blockSignals(True)
+        self.sort_combo.setCurrentIndex(index)
+        self.sort_combo.blockSignals(False)
+
+    # ---------------- 排序 / 搜索 ----------------
+
+    def _onSortChanged(self, index):
+        """排序下拉变化：记录排序开关后按当前状态重渲染列表"""
+        self.sort_by_letter = bool(self.sort_combo.itemData(index))
+        self._renderList()
+
+    def _onSearchChanged(self, text):
+        """搜索框文本变化：按关键字即时筛选并重渲染列表"""
+        self._renderList()
+
+    def _renderList(self):
+        """按 排序 + 搜索 当前状态重渲染可勾选列表（保持已勾选状态）
+
+        数据流：all_recipients →(activity.filterRecipients 按关键字)→(activity.sortRecipients 按字母)→ 展示
+        """
+        # 屏蔽 itemChanged 避免重填过程触发计数刷新（计数在填完后统一更新）
         self.recipient_list.itemChanged.disconnect(self._onItemToggled)
         self.recipient_list.clear()
-        self.all_recipients = list(recipients or [])
-        for email in self.all_recipients:
+
+        # 先按关键字过滤（业务逻辑在 activity），再按需排序（业务逻辑在 activity）
+        filtered = filterRecipients(self.all_recipients, self.search_edit.text())
+        ordered = sortRecipients(filtered, self.sort_by_letter)
+        for email in ordered:
             item = QListWidgetItem(email)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked)
+            item.setCheckState(
+                Qt.CheckState.Checked if email in self.selected_emails
+                else Qt.CheckState.Unchecked)
             self._addRecipientItem(item)
+
         self.recipient_list.itemChanged.connect(self._onItemToggled)
         self._updateCount()
         self._updateButtons()
 
     def _addRecipientItem(self, item):
-        """把单个收件人条目加入列表（供 setRecipients 复用）"""
+        """把单个收件人条目加入列表（供不同重填路径复用）"""
         self.recipient_list.addItem(item)
 
     # ---------------- 勾选状态管理 ----------------
 
-    def _onItemToggled(self, _item):
-        """列表项勾选状态变化时刷新已勾选计数"""
+    def _onItemToggled(self, item):
+        """列表项勾选状态变化：同步到勾选集合并刷新计数"""
+        email = item.text()
+        if item.checkState() == Qt.CheckState.Checked:
+            self.selected_emails.add(email)
+        else:
+            self.selected_emails.discard(email)
         self._updateCount()
 
     def _setAllChecked(self, checked):
-        """全选或取消全选（不断开信号，逐项设置勾选态即可触发计数刷新）
+        """全选或取消全选（更新勾选集合并对当前列表逐项设置勾选态）
+        注意：仅作用于当前可见（筛选后）的列表项。
 
         参数：
             checked<bool>：True 全选，False 取消全选
         """
         for i in range(self.recipient_list.count()):
-            self.recipient_list.item(i).setCheckState(
-                Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+            item = self.recipient_list.item(i)
+            if checked:
+                self.selected_emails.add(item.text())
+                item.setCheckState(Qt.CheckState.Checked)
+            else:
+                self.selected_emails.discard(item.text())
+                item.setCheckState(Qt.CheckState.Unchecked)
         self._updateCount()
 
     def _checkedRecipients(self):
-        """返回当前已勾选的收件人列表"""
-        return [
-            self.recipient_list.item(i).text()
-            for i in range(self.recipient_list.count())
-            if self.recipient_list.item(i).checkState() == Qt.CheckState.Checked
-        ]
+        """返回当前全部已勾选收件人（所有已勾选集合，含被筛选隐藏的）"""
+        return sorted(self.selected_emails, key=lambda e: e.lower())
 
     def getSelectedRecipients(self):
         """供外部读取最终勾选的收件人（确定后调用）
@@ -1311,9 +1389,12 @@ class RecipientPickerDialog(QDialog):
         return self._checkedRecipients()
 
     def _updateCount(self):
-        """刷新「已勾选 / 共」计数文案"""
+        """刷新「已勾选 / 共」计数文案
+
+        显示值：已勾选数 / 当前(筛选后可见)列表条数，便于用户感知筛选效果。
+        """
         total = self.recipient_list.count()
-        checked = len(self._checkedRecipients())
+        checked = len(self.selected_emails)
         self.count_label.setText('已勾选 %d / 共 %d' % (checked, total))
 
     def _updateButtons(self):
