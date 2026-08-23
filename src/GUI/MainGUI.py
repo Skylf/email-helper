@@ -44,6 +44,9 @@ from database import (
     CATEGORY_SENT,
     CATEGORY_DELETED,
 )
+# UI 按钮响应之后的业务逻辑收敛在 activity 包中，界面层仅负责调用
+from activity.recipient_bulk import parseRecipientFile, mergeRecipients
+from activity.mail_query import queryEmails
 
 # 发件人昵称默认值（发件人昵称输入框留空时使用）
 DEFAULT_FROM_NAME = 'Lhack 邮箱助手'
@@ -415,15 +418,8 @@ class MainWindow(QMainWindow):
             return
         cond = dlg.collectConditions()
         category = MENU_TO_CATEGORY.get(self._current_menu_id)
-        # 调用数据库结构化查询（按当前分类 + 传入条件过滤）
-        records = self.db.queryMails(
-            category=category,
-            title=cond.get('title', ''),
-            recipient=cond.get('recipient', ''),
-            sender=cond.get('sender', ''),
-            date_from=cond.get('date_from'),
-            date_to=cond.get('date_to'),
-        )
+        # 查询业务委托 activity 层执行（按当前分类 + 传入条件过滤）
+        records = queryEmails(self.db, category, cond)
         # 用查询结果渲染列表页（标题后追加「搜索结果」说明当前处于检索模式）
         self.list_page.setTitle('%s（搜索结果 %d 条）' % (current_label, len(records)))
         self.list_page.showRecords(records)
@@ -1153,6 +1149,179 @@ class MailListPage(QWidget):
         QMessageBox.information(None, '提示', '更多功能开发中。')
 
 
+class RecipientPickerDialog(QDialog):
+    """收件人选择器（群发功能）：选择收件人 Excel/TXT 文件并让用户勾选收件人
+
+    现阶段仅实现 UI：
+      - 「选择文件」按钮弹出文件对话框（*.xlsx / *.xls / *.txt）
+      - 收件人以可勾选的列表展示，支持 全选 / 取消全选
+      - 底部显示「已勾选 N / 共 M」
+      - 确定后返回勾选的收件人邮箱列表
+
+    说明：文件读取与自动识别收件人的逻辑为占位（_loadRecipientsFromFile 返回空），
+          待后续接入解析 API 后再填充。
+    """
+
+    def __init__(self, parent=None):
+        """初始化收件人选择器对话框"""
+        super().__init__(parent)
+        self.setWindowTitle('收件人选择（群发）')
+        self.resize(420, 460)
+        # 当前已识别出的全部收件人列表（字符串邮箱）
+        self.all_recipients = []
+
+        v = QVBoxLayout(self)
+        v.setSpacing(8)
+
+        # 顶部说明 + 「选择文件」按钮
+        top = QHBoxLayout()
+        tip = QLabel('选择收件人 Excel 或 TXT 文件（文件内只含收件人邮箱）')
+        tip.setStyleSheet('color:#666;')
+        top.addWidget(tip)
+        top.addStretch()
+        pick_btn = QPushButton('选择文件')
+        pick_btn.setStyleSheet('QPushButton{background:#1b7bf2;color:#fff;border:0;'
+                               'padding:5px 14px;border-radius:4px;}')
+        pick_btn.clicked.connect(self.onPickFile)
+        top.addWidget(pick_btn)
+        v.addLayout(top)
+
+        # 收件人可勾选列表
+        self.recipient_list = QListWidget()
+        self.recipient_list.itemChanged.connect(self._onItemToggled)
+        v.addWidget(self.recipient_list)
+
+        # 全选 / 取消全选
+        op_row = QHBoxLayout()
+        self.select_all_btn = QPushButton('全选')
+        self.select_all_btn.clicked.connect(lambda: self._setAllChecked(True))
+        self.clear_all_btn = QPushButton('取消全选')
+        self.clear_all_btn.clicked.connect(lambda: self._setAllChecked(False))
+        op_row.addWidget(self.select_all_btn)
+        op_row.addWidget(self.clear_all_btn)
+        op_row.addStretch()
+        self.count_label = QLabel('已勾选 0 / 共 0')
+        op_row.addWidget(self.count_label)
+        v.addLayout(op_row)
+
+        # 确定 / 取消
+        bottom = QHBoxLayout()
+        bottom.addStretch()
+        confirm_btn = QPushButton('确定')
+        confirm_btn.setStyleSheet('QPushButton{background:#1b7bf2;color:#fff;border:0;'
+                                  'padding:6px 20px;border-radius:4px;}')
+        confirm_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton('取消')
+        cancel_btn.clicked.connect(self.reject)
+        bottom.addWidget(confirm_btn)
+        bottom.addWidget(cancel_btn)
+        v.addLayout(bottom)
+
+        # 启用列表为空时的按钮态保护
+        self._updateButtons()
+        self._updateCount()
+
+    # ---------------- 文件选择（解析逻辑为占位） ----------------
+
+    def onPickFile(self):
+        """弹出文件对话框选择收件人文件（Excel/TXT），随后解析并展示收件人
+
+        解析由 activity.recipient_bulk 提供，识别出的收件人填充为可勾选列表。
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self, '选择收件人文件', '',
+            '收件人文件 (*.xlsx *.xls *.txt);;所有文件 (*)')
+        if not path:
+            return
+        # 解析收件人（业务逻辑在 activity 层），文件类型不支持等异常在此兜底提示
+        try:
+            recipients = self._loadRecipientsFromFile(path)
+        except ValueError as exc:
+            QMessageBox.warning(self, '解析失败', str(exc))
+            return
+        self.setRecipients(recipients)
+
+    def _loadRecipientsFromFile(self, path):
+        """从文件读取并识别收件人（业务逻辑委托给 activity.recipient_bulk 实现）
+
+        参数：
+            path<str>：选中的收件人文件路径（xlsx/xls/txt）
+
+        返回：
+            list<str>：识别出的收件人邮箱列表（去重、保持顺序）
+        """
+        # 委托 activity 层解析；文件类型不支持等异常由调用方（onPickFile）统一处理
+        return parseRecipientFile(path)
+
+    def setRecipients(self, recipients):
+        """用识别出的收件人填充可勾选列表（默认全部勾选）
+
+        参数：
+            recipients<list<str>>：收件人邮箱列表
+        """
+        # 先断开信号避免填充过程触发统计
+        self.recipient_list.itemChanged.disconnect(self._onItemToggled)
+        self.recipient_list.clear()
+        self.all_recipients = list(recipients or [])
+        for email in self.all_recipients:
+            item = QListWidgetItem(email)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
+            self._addRecipientItem(item)
+        self.recipient_list.itemChanged.connect(self._onItemToggled)
+        self._updateCount()
+        self._updateButtons()
+
+    def _addRecipientItem(self, item):
+        """把单个收件人条目加入列表（供 setRecipients 复用）"""
+        self.recipient_list.addItem(item)
+
+    # ---------------- 勾选状态管理 ----------------
+
+    def _onItemToggled(self, _item):
+        """列表项勾选状态变化时刷新已勾选计数"""
+        self._updateCount()
+
+    def _setAllChecked(self, checked):
+        """全选或取消全选（不断开信号，逐项设置勾选态即可触发计数刷新）
+
+        参数：
+            checked<bool>：True 全选，False 取消全选
+        """
+        for i in range(self.recipient_list.count()):
+            self.recipient_list.item(i).setCheckState(
+                Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+        self._updateCount()
+
+    def _checkedRecipients(self):
+        """返回当前已勾选的收件人列表"""
+        return [
+            self.recipient_list.item(i).text()
+            for i in range(self.recipient_list.count())
+            if self.recipient_list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+
+    def getSelectedRecipients(self):
+        """供外部读取最终勾选的收件人（确定后调用）
+
+        返回：
+            list<str>：勾选的收件人邮箱列表
+        """
+        return self._checkedRecipients()
+
+    def _updateCount(self):
+        """刷新「已勾选 / 共」计数文案"""
+        total = self.recipient_list.count()
+        checked = len(self._checkedRecipients())
+        self.count_label.setText('已勾选 %d / 共 %d' % (checked, total))
+
+    def _updateButtons(self):
+        """按列表是否为空启用/禁用 全选 与 取消全选 按钮"""
+        has_items = self.recipient_list.count() > 0
+        self.select_all_btn.setEnabled(has_items)
+        self.clear_all_btn.setEnabled(has_items)
+
+
 class NormalPage(QWidget):
     """普通模式发信页：仿 QQ 邮箱网页版写邮件界面
 
@@ -1343,6 +1512,15 @@ class NormalPage(QWidget):
         self.to_edit.setPlaceholderText('多个收件人用逗号或分号分隔')
         self.to_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         row1.addWidget(self.to_edit, 1)
+        # 群发收件人选择按钮：打开收件人选择器（批量勾选后可回填到收件人框）
+        self.pick_recipient_btn = QPushButton('收件人选择')
+        self.pick_recipient_btn.setToolTip('从 Excel/TXT 批量导入收件人并勾选')
+        self.pick_recipient_btn.setStyleSheet('QPushButton{background:#f5f7fa;color:#1a73e8;'
+                                              'border:1px solid #d0d7de;padding:4px 10px;'
+                                              'border-radius:4px;}'
+                                              'QPushButton:hover{background:#e6efff;}')
+        self.pick_recipient_btn.clicked.connect(self.onPickRecipients)
+        row1.addWidget(self.pick_recipient_btn)
         # 右侧可点击「抄送」「密送」「分别发送」标签
         self.cc_link = QLabel('<a href="#" style="text-decoration:none;color:#666;">抄送</a>')
         self.cc_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
@@ -1410,6 +1588,21 @@ class NormalPage(QWidget):
         wrap_layout.addWidget(self.return_row_widget)
 
         return wrap_layout
+
+    def onPickRecipients(self):
+        """打开收件人选择器，确定后把勾选的收件人回填到收件人输入框
+
+        选择器支持从 Excel/TXT 批量导入（解析在 activity 层）；
+        确定后把勾选结果委托 activity.mergeRecipients 合并回填（去重、滤空）。
+        """
+        dlg = RecipientPickerDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = dlg.getSelectedRecipients()
+        if not selected:
+            return
+        # 合并业务委托 activity 层：保留已有 + 新增勾选（去重、滤空），分号分隔
+        self.to_edit.setText(mergeRecipients(self.to_edit.text(), selected))
 
     def toggleCcArea(self):
         """切换抄送输入行的显示/隐藏"""
