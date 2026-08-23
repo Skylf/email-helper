@@ -1,0 +1,4 @@
+{
+  "SMTP_USERNAME": "your-email@example.com",
+  "SMTP_PASSWORD": "your-auth-code"
+}

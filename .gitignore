@@ -1,0 +1,29 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ---- 虚拟环境（体积巨大，必须排除）----
+.venv/
+venv/
+env/
+
+# ---- 敏感配置：SMTP 账号密码（真实凭据不入库）----
+config.local
+
+# ---- IDE ----
+.idea/
+.vscode/
+
+# ---- 运行时数据 / 日志 ----
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# ---- 打包产物 ----
+*.exe
+*.spec

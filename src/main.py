@@ -1,0 +1,44 @@
+# -*- coding: utf-8 -*-
+# 程序主入口
+# 作者：LF
+# 创建时间：2026-08-23
+# 功能：作为整个邮件助手程序的入口，负责启动 GUI 主程序。
+#       普通模式 / 高级模式（后续）的界面与流程均从 MainGUI 的主窗口进入，
+#       本文件只承载「创建应用 -> 显示主窗口 -> 进入事件循环」的主流程，
+#       具体界面类集中在 src/GUI/MainGUI.py（api），流程层见 src/GUI/runTest.py。
+
+import sys
+
+from PyQt6.QtWidgets import QApplication
+from path_manager import PathManager
+from GUI.MainGUI import MainWindow
+
+# 统一通过 PathManager 定位源码包根目录（开发=src，打包=_MEIPASS），
+# 追加到 sys.path，保证「GUI」「Email」包在两种环境下都能被导入。
+sys.path.insert(0, str(PathManager.source_root()))
+
+
+def main():
+    """主流程：创建 QApplication、主窗口并进入事件循环
+
+    调用位置：src/GUI/MainGUI.py 中的 MainWindow（主窗口类）
+    """
+    # 创建应用实例，管理全局事件循环与资源
+    app = QApplication(sys.argv)
+    # 创建主窗口（含普通模式/高级模式入口页）
+    window = MainWindow()
+    # 显示主窗口
+    window.show()
+    # 进入事件循环，直到窗口关闭后退出，并以返回值作为进程退出码
+    sys.exit(app.exec())
+
+
+if __name__ == '__main__':
+    try:
+        # 启动 GUI 主程序
+        main()
+    except Exception as e:
+        # 主流程异常兜底：打印错误并提示用户
+        print(f"程序出错: {e}")
+        # 发生异常时暂停，便于在终端查看错误信息而不闪退
+        input("按 Enter 键退出...")
