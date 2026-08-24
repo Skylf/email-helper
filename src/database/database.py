@@ -56,7 +56,7 @@ class MailDatabase:
 
     # ---------------- 表结构 ----------------
     def ensureSchema(self):
-        """建表：mails（若不存在），并迁移补充新字段"""
+        """建表：mails / tasks（若不存在），并迁移补充新字段"""
         with self.conn:
             self.conn.execute('''
                 CREATE TABLE IF NOT EXISTS mails(
@@ -75,31 +75,54 @@ class MailDatabase:
                     attachment_paths TEXT DEFAULT '[]',
                     inline_image_paths TEXT DEFAULT '{}',
                     created_at TEXT DEFAULT '',
+                    deleted_at TEXT DEFAULT '',
+                    task_id INTEGER DEFAULT 0
+                )
+            ''')
+            # 高级模式任务表：一条记录 = 一次高级发送任务
+            # （含任务名、所属分类、该任务邮件数、完整可复现配置 JSON 等）
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS tasks(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category TEXT NOT NULL,
+                    name TEXT DEFAULT '',
+                    send_time TEXT DEFAULT '',
+                    mail_count INTEGER DEFAULT 0,
+                    config TEXT DEFAULT '{}',
+                    created_at TEXT DEFAULT '',
                     deleted_at TEXT DEFAULT ''
                 )
             ''')
             # 常用查询字段建索引：按分类列表 + 按 id 回查
             self.conn.execute('CREATE INDEX IF NOT EXISTS idx_mails_cat ON mails(category)')
-            # 轻量迁移：旧库可能缺少 deleted_at 等新增字段，缺失则补列
+            self.conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_cat ON tasks(category)')
+            # 轻量迁移：旧库可能缺少新增字段，缺失则补列/补表
             self._migrateColumns()
 
     def _migrateColumns(self):
         """为既有数据库补充新增字段（ALTER TABLE ADD COLUMN，缺列才加）
 
-        说明：已存在的历史库没有 deleted_at（记录进入「已删除」的时间），
-        这里逐一检测补列，避免老库直接报错。
+        说明：已存在的历史库没有 deleted_at（记录进入「已删除」的时间）或
+        task_id（高级模式任务下邮件的关联任务），这里逐一检测补列，避免老库直接报错。
         """
         cols = {r[1] for r in self.conn.execute('PRAGMA table_info(mails)').fetchall()}
         if 'deleted_at' not in cols:
             self.conn.execute("ALTER TABLE mails ADD COLUMN deleted_at TEXT DEFAULT ''")
+        if 'task_id' not in cols:
+            self.conn.execute('ALTER TABLE mails ADD COLUMN task_id INTEGER DEFAULT 0')
+        # 字段补齐后再建索引（task_id 列可能存在缺失，故索引延后到这里建）
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_mails_task ON mails(task_id)')
 
     # ---------------- 写入 ----------------
     def insertMail(self, category, title='', recipient='', send_time=None,
                    from_name='', to_list=None, cc_list=None, bcc_list=None,
                    reply_to='', return_email='', html_text='',
-                   attachment_paths=None, inline_image_paths=None):
+                   attachment_paths=None, inline_image_paths=None,
+                   task_id=0):
         """插入一条邮件记录，返回新记录 id
 
+        参数：
+            task_id<int>：所属高级模式任务 id（普通邮件为 0）
         返回：
             int：新插入记录的 id
         """
@@ -108,8 +131,8 @@ class MailDatabase:
             cur = self.conn.execute(
                 'INSERT INTO mails(category,title,recipient,send_time,from_name,'
                 'to_list,cc_list,bcc_list,reply_to,return_email,html_text,'
-                'attachment_paths,inline_image_paths,created_at) '
-                'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                'attachment_paths,inline_image_paths,created_at,task_id) '
+                'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 (category, title, recipient, now, from_name,
                  json.dumps(to_list or [], ensure_ascii=False),
                  json.dumps(cc_list or [], ensure_ascii=False),
@@ -117,7 +140,7 @@ class MailDatabase:
                  reply_to, return_email, html_text,
                  json.dumps(attachment_paths or [], ensure_ascii=False),
                  json.dumps(inline_image_paths or {}, ensure_ascii=False),
-                 now))
+                 now, task_id))
         return cur.lastrowid
 
     # ---------------- 查询 ----------------
@@ -221,7 +244,7 @@ class MailDatabase:
         dict_fields = {'inline_image_paths'}
         plain_fields = {'category', 'title', 'recipient', 'send_time',
                         'from_name', 'reply_to', 'return_email', 'html_text',
-                        'deleted_at'}
+                        'deleted_at', 'task_id'}
 
         sets, params = [], []
         for key, value in fields.items():
@@ -310,6 +333,156 @@ class MailDatabase:
         for field in ('to_list', 'cc_list', 'bcc_list', 'attachment_paths'):
             d[field] = json.loads(d.get(field) or '[]')
         d['inline_image_paths'] = json.loads(d.get('inline_image_paths') or '{}')
+        d.setdefault('task_id', 0)
+        return d
+
+    # ---------------- 高级模式任务 ----------------
+    def insertTask(self, category, name='', config=None, send_time=None,
+                   mail_count=0):
+        """插入一条高级模式任务记录，返回新任务 id
+
+        参数：
+            category<str>：任务所属分类（已发送/草稿箱/已删除）
+            name<str>：任务名（默认「高级模式任务x」由调用方生成）
+            config<dict|str>：完整可复现配置，存为 JSON 字符串
+            send_time<str|None>：完成/保存时间
+            mail_count<int>：该任务下邮件数
+        返回：
+            int：新任务 id
+        """
+        now = send_time if send_time else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        config_str = config if isinstance(config, str) else json.dumps(config or {}, ensure_ascii=False)
+        with self.conn:
+            cur = self.conn.execute(
+                'INSERT INTO tasks(category,name,send_time,mail_count,config,created_at) '
+                'VALUES(?,?,?,?,?,?)',
+                (category, name, now, mail_count, config_str, now))
+        return cur.lastrowid
+
+    def getTask(self, task_id):
+        """按 id 查询单条任务，转成 dict（config 解析为 dict）
+        参数：
+            task_id<int>：任务 id
+        返回：
+            dict|None：任务记录
+        """
+        with self.conn:
+            row = self.conn.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
+        return self._taskToDict(row) if row else None
+
+    def getTasks(self, category=None):
+        """按分类查询任务列表，按完成/保存时间倒序
+        参数：
+            category<str|None>：限制分类，None 为全部
+        返回：
+            list<dict>：任务记录列表
+        """
+        if category:
+            sql = 'SELECT * FROM tasks WHERE category=? ORDER BY datetime(send_time) DESC, id DESC'
+            params = (category,)
+        else:
+            sql = 'SELECT * FROM tasks ORDER BY datetime(send_time) DESC, id DESC'
+            params = ()
+        with self.conn:
+            rows = self.conn.execute(sql, params).fetchall()
+        return [self._taskToDict(r) for r in rows]
+
+    def getMailsByTask(self, task_id):
+        """查询某任务下的全部邮件，按保存时间倒序
+        参数：
+            task_id<int>：任务 id
+        返回：
+            list<dict>：邮件记录列表
+        """
+        with self.conn:
+            rows = self.conn.execute(
+                'SELECT * FROM mails WHERE task_id=? '
+                'ORDER BY datetime(send_time) DESC, id DESC', (task_id,)).fetchall()
+        return [self._rowToDict(r) for r in rows]
+
+    def updateTask(self, task_id, **fields):
+        """按 id 更新任务记录的指定字段
+        参数：
+            task_id<int>：任务 id
+            **fields：待更新字段（category/name/mail_count/config/deleted_at 等）
+        返回：
+            bool：是否更新成功
+        """
+        json_fields = {'config'}
+        plain_fields = {'category', 'name', 'send_time', 'mail_count', 'deleted_at'}
+        sets, params = [], []
+        for key, value in fields.items():
+            if key in json_fields:
+                sets.append('%s=?' % key)
+                params.append(json.dumps(value or {}, ensure_ascii=False)
+                              if not isinstance(value, str) else value)
+            elif key in plain_fields:
+                sets.append('%s=?' % key)
+                params.append(value)
+        if not sets:
+            return False
+        params.append(task_id)
+        with self.conn:
+            cur = self.conn.execute('UPDATE tasks SET %s WHERE id=?' % ', '.join(sets), params)
+        return cur.rowcount > 0
+
+    def moveTask(self, task_id, new_category):
+        """移动任务到新分类（删除→已删除/恢复等），并同步其下邮件分类
+        参数：
+            task_id<int>：任务 id
+            new_category<str>：目标分类
+        返回：
+            bool：是否成功
+        """
+        # 移动任务本身
+        ok = self.updateTask(task_id, category=new_category,
+                             deleted_at=(datetime.now().strftime('%Y-%m-%d %H:%M:00')
+                                         if new_category == CATEGORY_DELETED else ''))
+        # 同步其下所有邮件到同一分类（已删除记录进入时间）
+        with self.conn:
+            if new_category == CATEGORY_DELETED:
+                self.conn.execute(
+                    "UPDATE mails SET category=?, deleted_at=? WHERE task_id=?",
+                    (new_category, datetime.now().strftime('%Y-%m-%d %H:%M:00'), task_id))
+            else:
+                self.conn.execute(
+                    "UPDATE mails SET category=?, deleted_at='' WHERE task_id=?",
+                    (new_category, task_id))
+        return ok
+
+    def deleteTask(self, task_id):
+        """物理删除一条任务及其下全部邮件
+        参数：
+            task_id<int>：任务 id
+        返回：
+            bool：是否删除任务成功
+        """
+        with self.conn:
+            self.conn.execute('DELETE FROM mails WHERE task_id=?', (task_id,))
+            cur = self.conn.execute('DELETE FROM tasks WHERE id=?', (task_id,))
+        return cur.rowcount > 0
+
+    def countTasks(self, category=None):
+        """统计任务数量，供生成默认任务名序号使用
+        参数：
+            category<str|None>：限制分类，None 为全部
+        返回：
+            int：任务总数
+        """
+        if category:
+            cur = self.conn.execute('SELECT COUNT(*) AS c FROM tasks WHERE category=?', (category,))
+        else:
+            cur = self.conn.execute('SELECT COUNT(*) AS c FROM tasks')
+        return cur.fetchone()['c']
+
+    @staticmethod
+    def _taskToDict(row):
+        """把任务 sqlite3.Row 转成 dict，config 解析为 dict"""
+        d = dict(row)
+        try:
+            d['config'] = json.loads(d.get('config') or '{}')
+        except Exception:
+            d['config'] = {}
         return d
 
     def close(self):

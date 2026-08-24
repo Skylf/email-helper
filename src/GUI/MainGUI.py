@@ -13,20 +13,23 @@
 
 import os
 import re
+import time
+import random
 from datetime import datetime, timedelta
 
 from PyQt6.QtCore import Qt, QThread, QTimer, QUrl, QRect, QRectF, pyqtSignal
 from PyQt6.QtGui import (
     QAction, QColor, QFont, QImage, QPainter, QPen,
-    QTextCursor, QTextDocument, QTextImageFormat, QTextListFormat,
+    QTextCharFormat, QTextCursor, QTextDocument, QTextImageFormat, QTextListFormat,
 )
 from PyQt6.QtWidgets import (
     QMainWindow, QStackedWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QTextEdit, QFontComboBox,
-    QComboBox, QListWidget, QListWidgetItem, QFileDialog, QColorDialog, QMessageBox,
+    QTextBrowser, QComboBox, QListWidget, QListWidgetItem, QFileDialog, QColorDialog, QMessageBox,
     QAbstractItemView, QMenu, QToolButton, QSizePolicy, QCheckBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QDialog,
-    QDateEdit,
+    QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QDialog, QTabWidget,
+    QDateEdit, QRadioButton, QGroupBox, QScrollArea, QSplitter, QButtonGroup,
+    QStyle, QStyleOptionFrame, QFormLayout,
 )
 
 # 跨文件调用说明：从 src/Email/NormalMode.py 导入 NormalMode 类，
@@ -62,6 +65,72 @@ DEFAULT_FROM_EMAIL = SMTP_USERNAME or 'your-email@example.com'
 
 # 字号下拉框候选字号列表（单位：磅）
 FONT_SIZES = ['8', '9', '10', '11', '12', '14', '16', '18', '20', '24', '28', '32', '36', '48', '72']
+
+# 高级模式「配置页」全局样式表（QSS）：控制分组区块、进度指示、变量面板、主按钮与黄字提示
+CONFIG_STYLE = """
+QFrame#configSection { background:#fafbfc; border:1px solid #e3e6ea; border-radius:8px; }
+QLabel#sectionTitle { color:#1f2329; font-weight:600; font-size:14px; }
+QLabel#sectionHint { color:#8a919b; font-size:12px; }
+QWidget#varPanel { background:#f6f8fb; border:1px solid #e0e4ea; border-radius:8px; }
+QLabel#varTitle { color:#1f2329; font-weight:600; font-size:14px; }
+QLabel#varHint, QLabel#varNote { color:#8a919b; font-size:12px; }
+QPushButton#varMarkBtn { background:#2f6fed; color:#ffffff; font-weight:600;
+    border:none; border-radius:4px; padding:6px 12px; }
+QPushButton#varMarkBtn:hover { background:#2859c9; }
+QPushButton#varMarkBtn:pressed { background:#1f4bad; }
+QListWidget#varList { background:#ffffff; border:1px solid #e3e6ea;
+    border-radius:6px; padding:2px; }
+QLabel#yellowTip { color:#b06a00; background:#fff8e1; border:1px solid #f3d185;
+    border-radius:4px; padding:6px 8px; }
+QPushButton#primaryBtn { background:#2f6fed; color:#ffffff; font-weight:600;
+    border:none; border-radius:4px; }
+QPushButton#primaryBtn:hover { background:#2859c9; }
+QPushButton#primaryBtn:pressed { background:#1f4bad; }
+QLabel#stepActive { background:#2f6fed; color:#ffffff; font-weight:600;
+    border-radius:12px; padding:6px 12px; }
+QLabel#stepDone { background:#e8efff; color:#2f6fed; font-weight:500;
+    border-radius:12px; padding:6px 12px; }
+QLabel#stepTodo { background:#f1f3f5; color:#9aa1ab; font-weight:500;
+    border-radius:12px; padding:6px 12px; }
+QLabel#loadHint { color:#b8860b; font-weight:600; padding:2px 0; }
+QLabel#loadRowName { color:#1f2329; font-weight:600; min-width:96px; }
+QLabel#loadPathEmpty { color:#c0c4cc; }
+QLabel#loadPathSet { color:#2f6fed; font-size:11pt; }
+QListWidget#loadList { background:#ffffff; border:1px solid #e3e6ea;
+    border-radius:10px; padding:4px; }
+/* 负载配给页：标记选择区 */
+QLabel#loadSectionTitle { color:#1f2329; font-weight:700; font-size:15px; }
+QLabel#loadSubTitle { color:#1f2329; font-weight:600; font-size:13px; }
+QLabel#loadStatusOk { color:#18794e; font-weight:600; }
+QLabel#loadStatusPending { color:#b06a00; font-weight:600; }
+QComboBox#loadMarkCombo { background:#ffffff; border:1px solid #d0d3d9;
+    border-radius:6px; padding:4px 8px; min-height:28px; }
+/* 负载配给页：Payload设置区 */
+QFrame#loadPayloadFrame { background:#fafbfc; border:1px solid #e3e6ea;
+    border-radius:8px; }
+QPushButton#loadActionBtn { background:#ffffff; border:1px solid #d0d3d9;
+    border-radius:5px; padding:6px 10px; color:#1f2329; }
+QPushButton#loadActionBtn:hover { background:#f1f3f5; border-color:#2f6fed; color:#2f6fed; }
+QPushButton#loadActionBtn:disabled { color:#c0c4cc; border-color:#e8eaed; background:#fafbfc; }
+QPushButton#loadPrimaryBtn { background:#2f6fed; color:#ffffff; font-weight:600;
+    border:none; border-radius:5px; padding:6px 12px; }
+QPushButton#loadPrimaryBtn:hover { background:#2859c9; }
+QPushButton#loadPrimaryBtn:disabled { background:#a8c0f5; color:#ffffff; }
+QListWidget#loadPreviewList { background:#ffffff; border:1px solid #e3e6ea;
+    border-radius:6px; padding:2px; font-family:'Consolas','Courier New',monospace;
+    font-size:12px; }
+QLabel#loadFileInfo { color:#595f69; font-size:12px; padding:4px 0; }
+QLabel#loadFileInfoEmpty { color:#c0c4cc; font-size:12px; padding:4px 0; }
+/* 负载配给页：绑定规则表 */
+QTableWidget#loadBindingTable { background:#ffffff; gridline-color:#e8eaed;
+    border:1px solid #e3e6ea; border-radius:6px; }
+QTableWidget#loadBindingTable::item { padding:4px 6px; }
+QHeaderView::section { background:#f6f8fb; color:#1f2329; font-weight:600;
+    padding:6px; border:1px solid #e3e6ea; }
+QPushButton#loadDelBtn { background:transparent; color:#d03050; border:none;
+    padding:2px 6px; font-size:12px; }
+QPushButton#loadDelBtn:hover { text-decoration:underline; }
+"""
 
 # 主窗口左侧菜单：(id, 显示名)，用于左栏列表 + 选中态切换
 # 说明：本项目只提供「发信」服务，不收邮件，故无「收件箱/星标/群邮件/记事本/垃圾箱」。
@@ -181,6 +250,90 @@ class SendWorker(QThread):
         """线程体：调用普通模式发送接口并发出结果信号"""
         result = self.normal_mode.send()
         self.finished_signal.emit(result)
+
+
+class BatchSendWorker(QThread):
+    """批量邮件发送工作线程：高级模式第5步，逐个收件人单独发送
+
+    为规避收件方垃圾邮件流控对整批发信的影响，每封之间随机休息
+    SEND_INTERVAL_CANDIDATES（0.2~0.5 秒）再发下一封，避免固定节奏被识别为群发。
+    每封完成后通过信号把结果回传主线程，供发送页实时更新状态。
+    """
+
+    # 相邻两封发送的随机间隔候选（秒）：避开固定频率，降低被判垃圾邮件/IP封禁概率
+    SEND_INTERVAL_CANDIDATES = (0.2, 0.3, 0.4, 0.5)
+
+    # 单封发送完成信号：行号, 是否成功, 结果说明
+    mail_done = pyqtSignal(int, bool, str)
+    # 单封开始发送信号：行号（供界面把该行状态改为「正在发送…」）
+    mail_started = pyqtSignal(int)
+    # 全部发送完成信号：成功数, 失败数
+    all_done = pyqtSignal(int, int)
+
+    def __init__(self, send_items, interval_candidates=SEND_INTERVAL_CANDIDATES):
+        """初始化批量发送线程
+
+        参数：
+            send_items<list>：待发送项，每项为 dict，含构造单封 NormalMode 所需的字段
+            interval_candidates<tuple>：随机间隔候选集合
+        """
+        super().__init__()
+        self.send_items = list(send_items)
+        self.interval_candidates = interval_candidates
+
+    def _buildAndSendOne(self, item):
+        """构造单封 NormalMode 并发送，返回 (是否成功, 说明)
+
+        参数：
+            item<dict>：单封发送配置（由主线程传入）
+        返回：
+            tuple<bool, str>
+        """
+        from src.Email.NormalMode import NormalMode
+        try:
+            nm = NormalMode()
+            kwargs = dict(
+                n_name=item.get('n_name'),
+                to_list=item['to_list'],
+                email_title=item.get('email_title'),
+                html_text=item.get('html_text'),
+                attachment_paths=item.get('attachment_paths'),
+                inline_image_paths=item.get('inline_image_paths'),
+                cc_list=item.get('cc_list'),
+                bcc_list=item.get('bcc_list'),
+                reply_to=item.get('reply_to'),
+                return_email=item.get('return_email'),
+            )
+            if not nm.setConfig(**kwargs):
+                return False, '邮件配置失败'
+            over_limits, limit_msg = nm.checkLimits()
+            if over_limits:
+                return False, limit_msg
+            over_size, _, _ = nm.checkSize()
+            if over_size:
+                return False, '邮件总大小超过上限，请改用网盘链接'
+            ok = nm.send()
+            return (True, '发送成功') if ok else (False, '发送失败')
+        except Exception as e:   # 网络/配置等异常统一转为失败
+            return False, '异常：%s' % e
+
+    def run(self):
+        """线程体：逐封发送并按随机间隔节流，全部结束后发完成信号"""
+        ok_cnt = 0
+        fail_cnt = 0
+        count = len(self.send_items)
+        for idx, item in enumerate(self.send_items):
+            self.mail_started.emit(idx)       # 通知界面该行开始发送
+            success, msg = self._buildAndSendOne(item)
+            if success:
+                ok_cnt += 1
+            else:
+                fail_cnt += 1
+            self.mail_done.emit(idx, success, msg)
+            # 非末尾一封：随机休息，避免固定节奏被判为批量群发
+            if idx < count - 1:
+                time.sleep(random.choice(self.interval_candidates))
+        self.all_done.emit(ok_cnt, fail_cnt)
 
 
 class SearchDialog(QDialog):
@@ -351,6 +504,10 @@ class MainWindow(QMainWindow):
             on_click_view=self.onRequestView,
             on_click_edit=self.onRequestEdit,
             on_click_delete=self.onRequestDelete,
+            on_open_task=self.onRequestOpenTask,
+            on_click_task_delete=self.onRequestTaskDelete,
+            on_click_task_restore=self.onRequestTaskRestore,
+            on_back_task=self.onTaskListBack,
         )
         self.stack.addWidget(self.list_page)
 
@@ -404,13 +561,13 @@ class MainWindow(QMainWindow):
         self.search_edit.setPlaceholderText('搜索邮件（需点击查询）')
         self.search_edit.setMinimumWidth(280)
         self.search_edit.returnPressed.connect(self.onSearch)
-        search_btn = QPushButton('查询')
-        search_btn.setStyleSheet('QPushButton{background:#fff;color:#1b7bf2;border:0;'
-                                 'padding:4px 12px;border-radius:4px;font-weight:bold;}'
-                                 'QPushButton:hover{background:#e6efff;}')
-        search_btn.clicked.connect(self.onSearch)
+        self.search_btn = QPushButton('查询')
+        self.search_btn.setStyleSheet('QPushButton{background:#fff;color:#1b7bf2;border:0;'
+                                      'padding:4px 12px;border-radius:4px;font-weight:bold;}'
+                                      'QPushButton:hover{background:#e6efff;}')
+        self.search_btn.clicked.connect(self.onSearch)
         h.addWidget(self.search_edit)
-        h.addWidget(search_btn)
+        h.addWidget(self.search_btn)
         return bar
 
     def onSearch(self):
@@ -511,13 +668,16 @@ class MainWindow(QMainWindow):
             # 从数据库读取该分类下全部记录（时间倒序）
             category = MENU_TO_CATEGORY[menu_id]
             # 正在查看「已删除」时顺带清理过期记录（超过保留期的自动永久删除），
-            # 保证应用长时间运行时 30 天清理机制仍生效
+            # 同时清理过期的已删除任务（含其下邮件）
             if category == CATEGORY_DELETED:
                 self.db.deleteExpired(CATEGORY_DELETED, DELETE_RETENTION_DAYS)
-            records = self.db.getMails(category)
+                self._cleanupExpiredTasks()
+            # 高级模式邮件以任务文件夹展示：独立邮件（task_id=0）与任务记录分别取
+            records = [m for m in self.db.getMails(category) if not m.get('task_id')]
+            tasks = self.db.getTasks(category)
             self.list_page.setTitle(title)
-            self.list_page.showRecords(records)
-            self.list_page.showTable(bool(records))
+            self.list_page.showCategoryData(records, tasks)
+            self.list_page.showTable(bool(records) or bool(tasks))
         else:
             # 非列表菜单（本项目暂无）：显示空白占位提示
             self.list_page.setTitle(title)
@@ -600,6 +760,101 @@ class MainWindow(QMainWindow):
         self._refreshListPageFor(self._current_menu_id)
         QMessageBox.information(self, '删除成功', '已删除 %d 封邮件。' % len(mail_ids))
 
+    # ---------------- 高级模式任务：打开/详情/删除/恢复/返回 ----------------
+    def onRequestOpenTask(self, task_id):
+        """打开任务文件夹：双击/右键任务按分类路由
+        - 草稿箱任务 → 恢复编辑（进入高级模式继续编辑）
+        - 已发送/已删除任务 → 进入任务详情视图（列出该任务全部邮件）
+        参数：
+            task_id<int>：任务 id
+        """
+        task = self.db.getTask(task_id)
+        if not task:
+            QMessageBox.warning(self, '提示', '任务不存在或已被删除。')
+            return
+        if task['category'] == CATEGORY_DRAFT:
+            self._restoreDraftTaskEditing(task_id)
+        else:
+            self._showTaskDetail(task_id)
+
+    def _showTaskDetail(self, task_id):
+        """进入任务详情视图：列出该任务下全部邮件（用于查看已发送/已删除任务）"""
+        task = self.db.getTask(task_id)
+        if not task:
+            QMessageBox.warning(self, '提示', '任务不存在或已被删除。')
+            return
+        mails = self.db.getMailsByTask(task_id)
+        self.list_page.showTaskDetail(task, mails)
+        self.list_page.showTable(bool(mails), '该任务暂无邮件记录。')
+        # 详情视图仍处于列表浏览场景：显示左侧菜单与顶部搜索
+        self.left_pane.setVisible(True)
+        self._setSearchBarVisible(True)
+        self.stack.setCurrentWidget(self.list_page)
+
+    def _restoreDraftTaskEditing(self, task_id):
+        """恢复草稿任务为高级模式可编辑状态：还原全部配置/负载/预览，可继续编辑或发送"""
+        task = self.db.getTask(task_id)
+        if not task:
+            QMessageBox.warning(self, '提示', '任务不存在或已被删除。')
+            return
+        # 还原序列化的全部配置（含输入控件/附件/负载绑定/预览邮件），并回到配置页
+        self.high_page._restoreTaskConfig(task.get('config') or {})
+        # 回填任务名，并记住当前编辑的任务 id（此后存草稿/发送更新到该任务而非新建）
+        if hasattr(self.high_page, 'task_name_edit'):
+            self.high_page.task_name_edit.setText(task.get('name') or '')
+        self.high_page._current_task_id = task_id
+        # 隐藏左侧菜单与顶部搜索，获得更大的高级模式编辑空间
+        self.left_pane.setVisible(False)
+        self._setSearchBarVisible(False)
+        self.stack.setCurrentWidget(self.high_page)
+
+    def onRequestTaskDelete(self, task_ids, permanent=False):
+        """删除任务：常规删除移入「已删除」，彻底删除(永久)连带其下邮件物理删除
+        参数：
+            task_ids<list<int>>：任务 id 列表
+            permanent<bool>：True=彻底删除；False=移入已删除
+        """
+        if not task_ids:
+            return
+        for tid in task_ids:
+            if permanent:
+                self.db.deleteTask(tid)
+            else:
+                self.db.moveTask(tid, CATEGORY_DELETED)
+        self._refreshListPageFor(self._current_menu_id)
+        verb = '永久删除' if permanent else '移入已删除'
+        QMessageBox.information(self, '任务管理', '已%s %d 个高级模式任务。' % (verb, len(task_ids)))
+
+    def onRequestTaskRestore(self, task_id):
+        """恢复已删除任务回「草稿箱」（连带恢复其下全部邮件）"""
+        if task_id is None:
+            return
+        self.db.moveTask(task_id, CATEGORY_DRAFT)
+        QMessageBox.information(self, '恢复成功', '高级模式任务已恢复到草稿箱。')
+        self.onTaskListBack()
+
+    def onTaskListBack(self):
+        """任务详情视图「返回列表」：重建当前分类视图并切回列表主页"""
+        self._refreshListPageFor(self._current_menu_id)
+        self.stack.setCurrentWidget(self.list_page)
+
+    def _cleanupExpiredTasks(self):
+        """清理「已删除」中保留超过 DELETE_RETENTION_DAYS 天的任务（连带其下邮件）
+        在进入已删除列表页时调用，保证任务与邮件一致的 30 天清理机制。
+        """
+        now = datetime.now()
+        for task in self.db.getTasks(CATEGORY_DELETED):
+            # 以进入已删除时间(deleted_at)为准，无则退化用完成/保存时间(send_time)
+            anchor = (task.get('deleted_at') or '').strip() or (task.get('send_time') or '').strip()
+            if not anchor:
+                continue
+            try:
+                anchor_dt = datetime.strptime(anchor, '%Y-%m-%d %H:%M:%S')
+            except (ValueError, TypeError):
+                continue
+            if (now - anchor_dt).total_seconds() > DELETE_RETENTION_DAYS * 24 * 3600:
+                self.db.deleteTask(task['id'])
+
     # ---------------- 堆叠页切换 ----------------
     def showListPage(self):
         """返回列表主页（发信完成或取消/返回后调用）
@@ -609,18 +864,24 @@ class MainWindow(QMainWindow):
         """
         # 恢复显示左侧菜单栏（从高级模式返回时）
         self.left_pane.setVisible(True)
+        # 列表页为浏览/查询场景：显示顶部搜索框与查询按钮
+        self._setSearchBarVisible(True)
         # 回到列表前先从数据库重读当前分类的数据（发送/存草稿后内容已变化）
         self._refreshListPageFor(self._current_menu_id)
         self.stack.setCurrentWidget(self.list_page)
 
     def showComposeModePage(self):
         """点「写信」→ 显示模式选择页（普通模式/高级模式）"""
+        # 模式选择页可回到列表，保留搜索框
+        self._setSearchBarVisible(True)
         self.stack.setCurrentWidget(self.mode_page)
 
     def showNormalPage(self):
         """选择模式 → 普通模式发信页（新建写信：重置为空白的写信状态）"""
         # 恢复显示左侧菜单栏（从高级模式切换时）
         self.left_pane.setVisible(True)
+        # 发信页为写信场景：隐藏顶部搜索框与查询按钮，避免干扰写信
+        self._setSearchBarVisible(False)
         # 新写信：先清空上次编辑残留（主题/正文/收件人等），再进入写信模式
         self.normal_page.clearForm()
         self.normal_page.setWriteMode()
@@ -631,7 +892,30 @@ class MainWindow(QMainWindow):
     def showHighModePlaceholder(self):
         """选择模式 → 高级模式页面，隐藏左侧菜单栏以获得更大编辑空间"""
         self.left_pane.setVisible(False)
+        # 高级发信页同样隐藏顶部搜索框与查询按钮
+        self._setSearchBarVisible(False)
+        # 从模式选择页重新进入高级模式视为「开启新一轮发送任务」，
+        # 重置负载初始化标志，使负载配给页在首次进入时重新构建空状态
+        if hasattr(self.high_page, '_load_state_initialized'):
+            self.high_page._load_state_initialized = False
+        # 开启新任务：重置任务名（自增默认名称）并清空当前任务 id（当前编辑状态非草稿恢复而来）
+        if hasattr(self.high_page, 'startNewTask'):
+            self.high_page.startNewTask()
         self.stack.setCurrentWidget(self.high_page)
+
+    def _setSearchBarVisible(self, visible):
+        """统一控制主窗口顶部搜索框与查询按钮的显示/隐藏
+
+        列表页与模式选择页需要搜索功能，显示其上的搜索框；
+        进入发信页（普通/高级）后隐藏，避免与写信操作冲突。
+        参数：
+            visible<bool>：True 显示，False 隐藏
+        """
+        if not hasattr(self, 'search_edit'):
+            return
+        self.search_edit.setVisible(visible)
+        if hasattr(self, 'search_btn'):
+            self.search_btn.setVisible(visible)
 
 
 class ComposeModePage(QWidget):
@@ -826,19 +1110,28 @@ class MailListPage(QWidget):
     工具栏/右键/列表均发出信号，由 MainWindow 接收并做占位弹窗。
     """
 
-    def __init__(self, db, on_click_compose, on_click_view, on_click_edit, on_click_delete):
+    def __init__(self, db, on_click_compose, on_click_view, on_click_edit, on_click_delete,
+                 on_open_task=None, on_click_task_delete=None, on_click_task_restore=None,
+                 on_back_task=None):
         super().__init__()
         # 数据库引用（用于删除/恢复时移动分类，列表展示数据由 MainWindow 从库读取后传入）
         self.db = db
-        # 四个外部回调：写信、查看、再次编辑、删除
+        # 普通邮件相关回调：写信、查看、再次编辑、删除
         self.on_click_compose = on_click_compose
         self.on_click_view = on_click_view
         self.on_click_edit = on_click_edit
         self.on_click_delete = on_click_delete
-        # 当前列表展示的邮件记录（dict 列表，含 id 字段）
-        self.records = []
-        # 与表格行一一对应的记录 id 列表（删除/再次编辑时回传 id）
-        self.mail_ids = []
+        # 高级模式任务相关回调：打开任务(双击)、删除任务(移入已删除/彻底删除)、恢复任务、返回分类视图
+        self.on_open_task = on_open_task
+        self.on_click_task_delete = on_click_task_delete
+        self.on_click_task_restore = on_click_task_restore
+        self.on_back_task = on_back_task
+        # 当前列表的行数据：每行一个 dict，形如 {'type':'mail','mail':rec} 或 {'type':'task','task':rec}
+        self.rows = []
+        # 当前所处的视图：None=分类视图（邮件+任务混排）；int=某任务详情视图（只显示该任务邮件）
+        self.current_task_id = None
+        # 任务详情视图的任务名（用于标题与返回
+        self.current_task_name = ''
         self.buildUi()
 
     def buildUi(self):
@@ -862,6 +1155,14 @@ class MailListPage(QWidget):
         self.count_label = QLabel('共 0 封邮件')
         self.count_label.setStyleSheet('color:#666;')
         title_row = QHBoxLayout()
+        # 返回按钮：仅在「任务详情视图」显示，点击回到分类视图
+        self.task_back_btn = QPushButton('‹ 返回列表')
+        self.task_back_btn.setStyleSheet('QPushButton{background:#e6efff;color:#1b7bf2;border:0;'
+                                         'padding:4px 12px;border-radius:4px;font-weight:bold;}'
+                                         'QPushButton:hover{background:#d5e6ff;}')
+        self.task_back_btn.clicked.connect(self._onBackTask)
+        self.task_back_btn.hide()
+        title_row.addWidget(self.task_back_btn)
         title_row.addWidget(self.title_label); title_row.addSpacing(8)
         title_row.addWidget(self.count_label); title_row.addStretch()
         v.addLayout(title_row)
@@ -962,37 +1263,125 @@ class MailListPage(QWidget):
         self.title_label.setText(title)
 
     def showRecords(self, records):
-        """用数据库邮件记录填充表格（真实数据展示）
+        """用数据库邮件记录填充表格（仅邮件，不含任务；供搜索/普通场景展示）
 
         参数：
             records<list<dict>>：一条条邮件记录，需含 id/title/recipient/send_time
         """
-        self.records = list(records)
-        # 记录与行一一对应的 id，供删除/再次编辑回调回传
-        self.mail_ids = [r.get('id') for r in self.records]
-        self.table.setRowCount(len(self.records))
-        for r_idx, rec in enumerate(self.records):
-            # 第 0 列：复选框（用于批量删除）
+        # 组装为统一的行结构（全部为邮件行），进入分类视图
+        self.current_task_id = None
+        self.task_back_btn.hide()
+        self.rows = [{'type': 'mail', 'mail': rec} for rec in records]
+        self._renderRows()
+
+    def showCategoryData(self, mails, tasks):
+        """用「独立邮件 + 任务文件夹」混排填充分类视图（草稿箱/已发送/已删除通用）
+
+        高级模式产生的邮件以「任务文件夹」形式展示，避免邮件过多造成视觉阻碍；
+        普通邮件直接展示为邮件行。两者按保存时间倒序混排。
+
+        参数：
+            mails<list<dict>>：该分类下独立（非任务内）的邮件记录
+            tasks<list<dict>>：该分类下的高级模式任务记录
+        """
+        self.current_task_id = None
+        self.task_back_btn.hide()
+        self.rows = []
+        # 普通邮件行
+        for rec in mails:
+            self.rows.append({'type': 'mail', 'mail': rec})
+        # 高级模式任务文件夹行（展开后显示为该任务内全部邮件）
+        for t in tasks:
+            self.rows.append({'type': 'task', 'task': t})
+        # 按保存/发送时间倒序混排（无时间者排后）
+        self.rows.sort(key=lambda r: r['mail'].get('send_time', '')
+                       if r['type'] == 'mail' else r['task'].get('send_time', ''),
+                       reverse=True)
+        self._renderRows()
+
+    def showTaskDetail(self, task, mails):
+        """进入某任务详情视图：标题显示任务名，表格只列出该任务下全部邮件
+
+        参数：
+            task<dict>：任务记录（含 id/name/mail_count/send_time）
+            mails<list<dict>>：该任务下的邮件记录
+        """
+        self.current_task_id = task.get('id')
+        self.current_task_name = task.get('name', '')
+        # 显示返回按钮 + 任务名标题
+        self.task_back_btn.show()
+        self.title_label.setText(task.get('name', '高级模式任务'))
+        self.rows = [{'type': 'mail', 'mail': rec} for rec in mails]
+        self._renderRows()
+
+    def _onBackTask(self):
+        """「返回列表」点击：回调 MainWindow 重建分类视图"""
+        if self.on_back_task:
+            self.on_back_task()
+        else:
+            # 兜底：无回调时清掉任务详情状态并清空
+            self.current_task_id = None
+            self.task_back_btn.hide()
+            self.rows = []
+            self._renderRows()
+
+    def _renderRows(self):
+        """按 self.rows 渲染表格：支持邮件行与任务文件夹行两种类型
+
+        邮件行：0 复选框 / 1 主题 / 2 收件人 / 3 时间 / 4 剩余暂存
+        任务文件夹行：1「📁 任务名」/ 2「xx 封邮件」/ 3 时间 / 4 剩余暂存（已删除任务）
+        """
+        self.table.setRowCount(len(self.rows))
+        for r_idx, row in enumerate(self.rows):
+            # 第 0 列：复选框（用于批量删除/彻底删除）
             check_item = QTableWidgetItem()
             check_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
             check_item.setCheckState(Qt.CheckState.Unchecked)
             self.table.setItem(r_idx, 0, check_item)
-            # 1:主题 2:收件人 3:时间（取数据库字段）
+
+            if row['type'] == 'task':
+                # 任务文件夹行：列 1 显示 📁任务名，列 2 显示邮件数，列 3 显示时间
+                task = row['task']
+                name_item = QTableWidgetItem('📁 ' + task.get('name', '高级模式任务'))
+                f = name_item.font(); f.setBold(True); name_item.setFont(f)
+                name_item.setForeground(QColor('#1b7bf2'))
+                self.table.setItem(r_idx, 1, name_item)
+                self.table.setItem(r_idx, 2, QTableWidgetItem('%d 封邮件' % task.get('mail_count', 0)))
+                self.table.setItem(r_idx, 3, QTableWidgetItem(str(task.get('send_time', ''))))
+                # 已删除任务行显示剩余暂存（复用邮件的时间计算）
+                is_del = task.get('category') == CATEGORY_DELETED
+                remain_text = self.formatRemainText(task) if is_del else '-'
+                remain_item = QTableWidgetItem(remain_text)
+                remain_item.setForeground(QColor('#c0392b') if is_del and self._isAlmostGone(task)
+                                          else QColor('#333'))
+                self.table.setItem(r_idx, 4, remain_item)
+                continue
+
+            # 邮件行（与历史逻辑一致）
+            rec = row['mail']
+            # 1:主题 2:收件人 3:时间
             row_vals = (rec.get('title', ''), rec.get('recipient', ''), rec.get('send_time', ''))
             for c_idx, val in enumerate(row_vals, start=1):
                 item = QTableWidgetItem(str(val))
                 if c_idx == 1:
-                    # 主题列字体稍粗，增强可读性
                     f = item.font(); f.setBold(True); item.setFont(f)
                 self.table.setItem(r_idx, c_idx, item)
-            # 4:剩余暂存天数（仅已删除记录展示，其余分类为「-」）
+            # 4:剩余暂存（仅已删除记录展示）
             is_deleted_rec = rec.get('category') == CATEGORY_DELETED
             remain_text = self.formatRemainText(rec) if is_deleted_rec else '-'
             remain_item = QTableWidgetItem(remain_text)
-            # 若即将清理，用暖色提示引起注意
             remain_item.setForeground(QColor('#c0392b') if is_deleted_rec and self._isAlmostGone(rec) else QColor('#333'))
             self.table.setItem(r_idx, 4, remain_item)
-        self.count_label.setText('共 %d 封邮件' % len(self.records))
+        # 统计：任务详情视图显示「共 N 封邮件」；分类视图同时统计任务数量
+        if self.current_task_id is not None:
+            self.count_label.setText('共 %d 封邮件' % len(self.rows))
+        else:
+            mail_cnt = sum(1 for r in self.rows if r['type'] == 'mail')
+            task_cnt = sum(1 for r in self.rows if r['type'] == 'task')
+            base = '共 %d 封邮件' % mail_cnt
+            if task_cnt:
+                base += '，%d 个高级任务' % task_cnt
+            self.count_label.setText(base)
 
     def formatRemainText(self, rec):
         """计算单条邮件「剩余暂存」的可读文本（基于进入已删除的时间）
@@ -1069,24 +1458,60 @@ class MailListPage(QWidget):
                 indices.add(idx.row())
         return sorted(indices)
 
+    def _splitRows(self, indices):
+        """把选中行号拆分为 邮件id列表 与 任务id列表（删除/恢复前收集）
+
+        参数：
+            indices<list<int>>：行号列表（来自复选框或行选中）
+
+        返回：
+            mail_ids<list<int>>：邮件记录 id
+            task_ids<list<int>>：高级模式任务 id；首个任务 id 额外返回用于单任务操作
+        """
+        mail_ids, task_ids = [], []
+        first_task_id = None
+        for i in indices:
+            if i >= len(self.rows):
+                continue
+            row = self.rows[i]
+            if row['type'] == 'mail':
+                mail_ids.append(row['mail'].get('id'))
+            else:
+                tid = row['task'].get('id')
+                task_ids.append(tid)
+                if first_task_id is None:
+                    first_task_id = tid
+        return mail_ids, task_ids, first_task_id
+
+    def _rowDisplayText(self, i):
+        """取某行的展示名（邮件用主题，任务用任务名），供删除确认提示使用
+
+        参数：
+            i<int>：行号
+        返回：
+            str：展示文本；行号越界返回空串
+        """
+        if i >= len(self.rows):
+            return ''
+        row = self.rows[i]
+        if row['type'] == 'mail':
+            return row['mail'].get('title', '')
+        return row['task'].get('name', '高级模式任务')
+
     def onPermanentDelete(self):
-        """彻底删除：永久删除选中邮件；删除前弹窗二次确认（不可恢复）"""
+        """彻底删除：永久删除选中邮件/任务；删除前弹窗二次确认（不可恢复）"""
         indices = self._checkedRowIndices()
         if not indices:
             QMessageBox.information(self, '提示', '请先勾选或选中需要彻底删除的邮件。')
             return
-        # 将行号映射为记录 id + 主题（用于确认提示）
-        ids = [self.mail_ids[i] for i in indices if i < len(self.mail_ids)]
-        if not ids:
+        mail_ids, task_ids, _ = self._splitRows(indices)
+        if not mail_ids and not task_ids:
             return
-        first_title = ''
-        first = indices[0]
-        if first < len(self.records):
-            first_title = self.records[first].get('title', '')
-        # 删除前弹窗确认：永久删除不可恢复
-        tip = '将永久删除 %d 封邮件' % len(ids) if len(ids) > 1 else '将永久删除该邮件'
-        if first_title:
-            tip += '\n「%s」' % first_title
+        first_text = self._rowDisplayText(indices[0])
+        n = len(mail_ids) + len(task_ids)
+        tip = '将永久删除 %d 项' % n if n > 1 else '将永久删除该项'
+        if first_text:
+            tip += '\n「%s」' % first_text
         tip += '\n\n永久删除后不可恢复，确定继续吗？'
         result = QMessageBox.question(
             self, '彻底删除确认', tip,
@@ -1094,44 +1519,87 @@ class MailListPage(QWidget):
             QMessageBox.StandardButton.No)
         if result != QMessageBox.StandardButton.Yes:
             return
-        # 确认后回调 MainWindow 物理删除并刷新
-        self.on_click_delete(ids, permanent=True)
+        # 邮件与任务分别回调 MainWindow 物理删除并刷新
+        if mail_ids:
+            self.on_click_delete(mail_ids, permanent=True)
+        if task_ids:
+            self.on_click_task_delete(task_ids, permanent=True)
 
     def onToolbarDelete(self):
-        """工具条删除：收集选中行对应的记录 id，回调外部 on_click_delete"""
+        """工具条删除：把选中行拆分为邮件与任务，分别移入「已删除」"""
         indices = self._checkedRowIndices()
         if not indices:
             QMessageBox.information(self, '提示', '请先勾选或选中需要删除的行。')
             return
-        # 将行号映射为记录 id 列表
-        ids = [self.mail_ids[i] for i in indices if i < len(self.mail_ids)]
-        self.on_click_delete(ids)
+        mail_ids, task_ids, _ = self._splitRows(indices)
+        if mail_ids:
+            self.on_click_delete(mail_ids)
+        if task_ids:
+            self.on_click_task_delete(task_ids, permanent=False)
 
     def onToolbarEdit(self):
-        """工具条再次编辑：对第一条选中的记录发起再次编辑"""
+        """工具条再次编辑：邮件→再次编辑；任务→按分类处理（草稿=恢复编辑，已发送/已删除=进入详情）"""
         indices = self._checkedRowIndices()
         if not indices:
             sel = self.table.currentRow()
             indices = [sel] if sel >= 0 else []
         if not indices:
-            QMessageBox.information(self, '提示', '请先选中一行邮件。')
+            QMessageBox.information(self, '提示', '请先选中一行。')
             return
         first = indices[0]
-        if first >= len(self.mail_ids):
+        if first >= len(self.rows):
             return
-        # 回传该记录的 id
-        self.on_click_edit(self.mail_ids[first])
+        row = self.rows[first]
+        if row['type'] == 'task':
+            if self.on_open_task:
+                self.on_open_task(row['task'].get('id'))
+            return
+        # 邮件行：回传记录 id 发起再次编辑
+        if self.on_click_edit:
+            self.on_click_edit(row['mail'].get('id'))
 
     def onTableContextMenu(self, pos):
-        """列表右键菜单：删除 / 再次编辑（操作真实邮件记录）"""
+        """列表右键菜单：邮件→再次编辑/删除；任务→按分类提供 打开/恢复编辑/删除/彻底删除/恢复"""
         item = self.table.itemAt(pos)
         if item is None:
             return
         row = item.row()
-        mail_id = self.mail_ids[row] if row < len(self.mail_ids) else None
-        if mail_id is None:
+        if row >= len(self.rows):
             return
+        row_data = self.rows[row]
         menu = QMenu(self)
+
+        if row_data['type'] == 'task':
+            # 任务文件夹右键：草稿=「恢复编辑」，已删除=「进入查看/恢复/彻底删除」，已发送=「查看任务邮件」
+            task = row_data['task']
+            cat = task.get('category')
+            tid = task.get('id')
+            act_delete = act_restore = act_perm = None
+            act_open = QAction('恢复编辑（进入高级模式）' if cat == CATEGORY_DRAFT else '查看任务邮件', self)
+            menu.addAction(act_open)
+            if cat == CATEGORY_DELETED:
+                act_restore = QAction('恢复', self)
+                act_perm = QAction('彻底删除', self)
+                menu.addAction(act_restore)
+                menu.addAction(act_perm)
+            else:
+                act_delete = QAction('删除', self)
+                menu.addAction(act_delete)
+            chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
+            if chosen is None:
+                return
+            if chosen == act_open and self.on_open_task:
+                self.on_open_task(tid)
+            elif chosen == act_delete and self.on_click_task_delete:
+                self.on_click_task_delete([tid], permanent=False)
+            elif chosen == act_restore and self.on_click_task_restore:
+                self.on_click_task_restore(tid)
+            elif chosen == act_perm and self.on_click_task_delete:
+                self.on_click_task_delete([tid], permanent=True)
+            return
+
+        # 邮件行右键（任务详情视图内同样适用）
+        mail_id = row_data['mail'].get('id')
         act_edit = QAction('再次编辑', self)
         act_delete = QAction('删除', self)
         menu.addAction(act_edit)
@@ -1139,17 +1607,24 @@ class MailListPage(QWidget):
         chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
         if chosen is None:
             return
-        if chosen == act_edit:
+        if chosen == act_edit and self.on_click_edit:
             self.on_click_edit(mail_id)
-        elif chosen == act_delete:
+        elif chosen == act_delete and self.on_click_delete:
             self.on_click_delete([mail_id])
 
     def onTableDoubleClickEdit(self, model_index):
-        """列表双击：作为「查看」快捷入口（只读，不进入编辑）"""
+        """列表双击：邮件→只读查看；任务文件夹→由 MainWindow 按分类路由（草稿恢复编辑/其余进详情）"""
         row = model_index.row()
-        mail_id = self.mail_ids[row] if row < len(self.mail_ids) else None
-        if mail_id is not None:
-            self.on_click_view(mail_id)
+        if row >= len(self.rows):
+            return
+        row_data = self.rows[row]
+        if row_data['type'] == 'task':
+            if self.on_open_task:
+                self.on_open_task(row_data['task'].get('id'))
+            return
+        # 邮件行 → 查看
+        if self.on_click_view:
+            self.on_click_view(row_data['mail'].get('id'))
 
     @staticmethod
     def _placeholderForward():
@@ -1973,7 +2448,7 @@ class NormalPage(QWidget):
         label = QLabel('主  题')
         label.setMinimumWidth(70)
         row.addWidget(label)
-        self.title_edit = QLineEdit()
+        self.title_edit = MarkableLineEdit()   # 支持变量段局部高亮
         self.title_edit.setPlaceholderText('邮件主题')
         row.addWidget(self.title_edit, 1)
         return row
@@ -2180,9 +2655,12 @@ class NormalPage(QWidget):
     def updateAttachmentHeader(self):
         """更新附件区标题的数量显示，并根据是否有附件切换显示/隐藏"""
         count = len(self.attachment_paths)
-        self.attachment_count_label.setText('共 %d 个' % count)
-        # 有附件时显示附件区；没有时隐藏
-        self.attachment_area.setVisible(count > 0)
+        # 高级模式配置页未创建 attachment_area 时，仅更新计数标签
+        if hasattr(self, 'attachment_count_label') and self.attachment_count_label is not None:
+            self.attachment_count_label.setText('共 %d 个' % count)
+        # 普通模式附件区在高级/普通页均可能有；高级页不存在 attachment_area 时跳过显隐切换
+        if hasattr(self, 'attachment_area'):
+            self.attachment_area.setVisible(count > 0)
 
     # ---------------- 底部发件人行 ----------------
 
@@ -2728,6 +3206,16 @@ class NormalPage(QWidget):
         # 恢复需记录当前查看的记录 id（onRequestView 已在 fillFromRecord 前设置）
 
 
+class MarkableLineEdit(QLineEdit):
+    """单行输入框（用于主题/昵称）
+
+    变量仅用 $$...$$ 符号标记，不改变文字背景颜色。此类保留原类名与位置，
+    保持普通 QLineEdit 外观，避免对既有引用造成影响。
+    """
+    # 变量正则：与 AdvancedPage.VARIABLE_PATTERN 一致，匹配 $$...$$
+    VAR_PATTERN = re.compile(r'\$\$(.*?)\$\$')
+
+
 class AdvancedPage(NormalPage):
     """高级模式发信页：完整具备普通模式发信页的全部写信能力，并叠加「变量标记」
 
@@ -2736,151 +3224,2291 @@ class AdvancedPage(NormalPage):
       收件人区（抄送/密送可展开、分别发送、收件人选择导入、查看所有收件人）、
       主题行、两行富文本工具栏、正文编辑器、附件区、发件人栏。
     在此基础上额外提供「变量标记」（Payload Positions）：
-      在主题/正文中选中文字 → 点击「标记为变量」→ 包裹为 {{变量名}}；
-      右侧变量面板实时解析并列出所有 {{变量}}，可删除选中/清空所有。
-    右侧变量面板布局保持不变；{{变量}} 后续发送时按导入数据的列替换。
+      在主题/正文中选中文字 → 点击「标记为变量」→ 包裹为 $变量名$；
+      右侧变量面板实时解析并列出所有 $变量$，可删除选中/清空所有。
+    右侧变量面板布局保持不变；$变量$ 后续发送时按导入数据的列替换。
     """
 
-    # 变量包裹正则：匹配 {{...}} 格式
-    VARIABLE_PATTERN = re.compile(r'\{\{(.*?)\}\}')
+    # 变量包裹正则：匹配 $...$ 格式（用 $$ 包裹变量，避免花括号与正文内容冲突）
+    VARIABLE_PATTERN = re.compile(r'\$\$(.*?)\$\$')
+    # 预览页分段生成：每批生成 PREVIEW_BATCH_SIZE 封邮件，避免大批量一次性生成卡死界面
+    PREVIEW_BATCH_SIZE = 5
+
+    # ---------------- 任务机制 ----------------
+    def startNewTask(self):
+        """开启新一轮发送任务：重置任务名（自增默认名称）、清空上次任务的全部编辑状态
+
+        每次从模式选择页进入高级模式即视为开启新任务，页面必须为空白（无任何残留内容）。
+        由 MainWindow.showHighModePlaceholder 回调。
+
+        说明：恢复草稿任务走 _restoreTaskConfig 还原，不会经过本方法，故可安全全量清空。
+        """
+        # 默认任务名：高级模式任务x，x = 历史任务总数 + 1（跨已发送/草稿箱累计）
+        default_name = '高级模式任务%d' % (self.db.countTasks() + 1)
+        if hasattr(self, 'task_name_edit'):
+            self.task_name_edit.setText(default_name)
+        # 当前编辑中任务的数据库 id（草稿恢复进入时为该草稿任务 id，新任务为 None）
+        self._current_task_id = None
+        # ---- 清空上一任务残留的编辑内容（避免新任务打开时带旧数据）----
+        def _clear_inputattr(attr_name):
+            """清空指定输入控件文本；控件不存在则忽略"""
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setText('')
+        for name in ('to_edit', 'cc_edit', 'bcc_edit', 'reply_edit', 'return_edit',
+                     'nickname_edit', 'title_edit'):
+            _clear_inputattr(name)
+        if hasattr(self, 'body_editor'):
+            self.body_editor.clear()
+        # 抄送/密送展开行收起
+        for name in ('cc_row_widget', 'bcc_row_widget'):
+            if hasattr(self, name):
+                getattr(self, name).setVisible(False)
+        # 附件：固定路径与文件夹列表清空
+        self.attachment_paths = []
+        if hasattr(self, 'attachment_list'):
+            self.attachment_list.clear()
+        self.attach_folders = []
+        if hasattr(self, 'attach_folder_list'):
+            self.attach_folder_list.clear()
+        self.inline_image_paths = {}
+        # ---- 重置负载绑定 / 预览 / 变量 ----
+        self._load_map = {}
+        self._marker_keys = []
+        self._marker_names = {}
+        self._file_row_counts = {}
+        self._preview_mails = []
+        self._preview_all_generated = False
+        self._preview_rows_total = 0
+        self._load_state_initialized = False
+        self._markers_loaded = False
+        # 回到配置页第1步，并刷新右侧变量面板（此时应为空）
+        if hasattr(self, 'step_stack'):
+            self.step_stack.setCurrentIndex(0)
+            self._refreshIndicator(1)
+            self._refreshFooter(1)
+        if hasattr(self, '_updateVariableList'):
+            self._updateVariableList()
+
+    def _currentTaskName(self):
+        """取当前任务名（用户自定义或默认值）
+
+        返回：
+            str：任务名
+        """
+        if hasattr(self, 'task_name_edit') and self.task_name_edit.text().strip():
+            return self.task_name_edit.text().strip()
+        return '高级模式任务%d' % (self.db.countTasks() + 1)
+
+    def _serializeTaskConfig(self):
+        """序列化当前高级模式全部可复现配置供存草稿/发送落库
+
+        覆盖全部输入控件、负载绑定、附件文件夹与已生成预览邮件，保证可完整复现。
+
+        返回：
+            dict：可 JSON 序列化的配置快照
+        """
+        cfg = {}
+        # ---- 输入控件（高级模式配置页可能缺少某字段时自动跳过，避免 AttributeError）----
+        cfg['to_text'] = self.to_edit.text() if hasattr(self, 'to_edit') else ''
+        cfg['cc_text'] = self.cc_edit.text() if hasattr(self, 'cc_edit') else ''
+        cfg['bcc_text'] = self.bcc_edit.text() if hasattr(self, 'bcc_edit') else ''
+        cfg['from_text'] = self.from_edit.text() if hasattr(self, 'from_edit') else ''
+        cfg['reply_text'] = self.reply_edit.text() if hasattr(self, 'reply_edit') else ''
+        cfg['return_text'] = self.return_edit.text() if hasattr(self, 'return_edit') else ''
+        cfg['nickname_text'] = self.nickname_edit.text() if hasattr(self, 'nickname_edit') else ''
+        cfg['title_text'] = self.title_edit.text() if hasattr(self, 'title_edit') else ''
+        cfg['body_html'] = self.body_editor.toHtml() if hasattr(self, 'body_editor') else ''
+        # ---- 抄送/密送行展开状态 ----
+        cfg['cc_visible'] = bool(getattr(self, 'cc_row_widget', None)
+                                 and self.cc_row_widget.isVisible())
+        cfg['bcc_visible'] = bool(getattr(self, 'bcc_row_widget', None)
+                                  and self.bcc_row_widget.isVisible())
+        # ---- 附件：固定模式（附件路径列表） vs 不固定模式（文件夹列表）----
+        cfg['attach_fixed_mode'] = self.attach_fixed_radio.isChecked() \
+            if hasattr(self, 'attach_fixed_radio') else True
+        cfg['attachment_paths'] = list(getattr(self, 'attachment_paths', []) or [])
+        cfg['attach_folders'] = list(getattr(self, 'attach_folders', []) or [])
+        # ---- 内嵌图片映射 ----
+        cfg['inline_image_paths'] = dict(getattr(self, 'inline_image_paths', {}) or {})
+        # ---- 负载绑定 ----
+        cfg['load_map'] = dict(getattr(self, '_load_map', {}) or {})
+        cfg['marker_keys'] = list(getattr(self, '_marker_keys', []) or [])
+        cfg['marker_names'] = dict(getattr(self, '_marker_names', {}) or {})
+        # ---- 已生成预览邮件（含用户编辑后的最终内容）----
+        cfg['preview_mails'] = list(getattr(self, '_preview_mails', []) or [])
+        cfg['preview_all_generated'] = getattr(self, '_preview_all_generated', False)
+        cfg['preview_rows_total'] = getattr(self, '_preview_rows_total', 0)
+        return cfg
+
+    def _restoreTaskConfig(self, cfg):
+        """用序列化配置恢复高级模式页面（供从草稿箱点击任务恢复编辑）
+
+        参数：
+            cfg<dict>：_serializeTaskConfig 产生的配置快照
+        """
+        if not cfg:
+            return
+        # ---- 输入控件（逐个用 hasattr 保护，旧/待补字段缺失不致崩溃）----
+        if hasattr(self, 'to_edit') and cfg.get('to_text') is not None:
+            self.to_edit.setText(cfg.get('to_text', ''))
+        if hasattr(self, 'cc_edit') and cfg.get('cc_text') is not None:
+            self.cc_edit.setText(cfg.get('cc_text', ''))
+        if hasattr(self, 'bcc_edit') and cfg.get('bcc_text') is not None:
+            self.bcc_edit.setText(cfg.get('bcc_text', ''))
+        if hasattr(self, 'from_edit'):
+            self.from_edit.setText(cfg.get('from_text', ''))
+        if hasattr(self, 'reply_edit'):
+            self.reply_edit.setText(cfg.get('reply_text', ''))
+        if hasattr(self, 'return_edit'):
+            self.return_edit.setText(cfg.get('return_text', ''))
+        if hasattr(self, 'nickname_edit'):
+            self.nickname_edit.setText(cfg.get('nickname_text', ''))
+        if hasattr(self, 'title_edit'):
+            self.title_edit.setText(cfg.get('title_text', ''))
+        # 正文富文本：为空则清空
+        if cfg.get('body_html') and hasattr(self, 'body_editor'):
+            self.body_editor.setHtml(cfg.get('body_html', ''))
+        # ---- 抄送/密送行展开 ----
+        if hasattr(self, 'cc_row_widget') and cfg.get('cc_visible'):
+            self.cc_row_widget.setVisible(True)
+        if hasattr(self, 'bcc_row_widget') and cfg.get('bcc_visible'):
+            self.bcc_row_widget.setVisible(True)
+        # ---- 附件模式 ----
+        fixed = cfg.get('attach_fixed_mode', True)
+        if hasattr(self, 'attach_fixed_radio'):
+            self.attach_fixed_radio.setChecked(fixed)
+            if hasattr(self, 'attach_variable_radio'):
+                self.attach_variable_radio.setChecked(not fixed)
+        # 固定附件：写回 attachment_paths 与列表控件
+        self.attachment_paths = list(cfg.get('attachment_paths', []) or [])
+        if hasattr(self, 'attachment_list'):
+            self.attachment_list.clear()
+            for p in self.attachment_paths:
+                self.attachment_list.addItem(os.path.basename(p) if p else p)
+        # 不固定附件：写回文件夹列表
+        self.attach_folders = list(cfg.get('attach_folders', []) or [])
+        if hasattr(self, 'attach_folder_list'):
+            self.attach_folder_list.clear()
+            for f in self.attach_folders:
+                self.attach_folder_list.addItem(f)
+        # ---- 内嵌图片映射 ----
+        self.inline_image_paths = dict(cfg.get('inline_image_paths', {}) or {})
+        # ---- 负载绑定 ----
+        self._load_map = dict(cfg.get('load_map', {}) or {})
+        self._marker_keys = list(cfg.get('marker_keys', []) or [])
+        self._marker_names = dict(cfg.get('marker_names', {}) or {})
+        # ---- 已生成预览邮件 ----
+        self._preview_mails = list(cfg.get('preview_mails', []) or [])
+        self._preview_all_generated = cfg.get('preview_all_generated', False)
+        self._preview_rows_total = cfg.get('preview_rows_total', 0)
+        # 负载状态已就绪：此后进入负载/预览页不再重新初始化
+        self._load_state_initialized = True
+        self._markers_loaded = True
+        # 回到配置页并刷新变量列表
+        if hasattr(self, 'step_stack'):
+            self.step_stack.setCurrentIndex(0)
+            self._refreshIndicator(1)
+            self._refreshFooter(1)
+        self._updateVariableList()
+
+    def onSaveDraft(self):
+        """（高级模式重写）存草稿：把本任务全部可复现配置写入「草稿箱」任务
+
+        覆盖父类普通模式存草稿逻辑：高级模式以「任务」为单位保存，
+        记录任务名与完整配置快照，恢复时能复现配置/负载/预览等全部过程。
+        """
+        name = self._currentTaskName()
+        name = name or '高级模式任务%d' % (self.db.countTasks() + 1)
+        cfg = self._serializeTaskConfig()
+        # 新任务写一条草稿任务；若当前是草稿恢复编辑的任务则更新原任务（不新增）
+        if getattr(self, '_current_task_id', None) is not None \
+                and self.db.getTask(self._current_task_id) is not None:
+            self.db.updateTask(self._current_task_id, name=name, config=cfg,
+                               category=CATEGORY_DRAFT, mail_count=0)
+        else:
+            self._current_task_id = self.db.insertTask(
+                CATEGORY_DRAFT, name=name, config=cfg, mail_count=0)
+        QMessageBox.information(self, '保存成功', '任务「%s」已存入草稿箱，可到草稿箱恢复继续编辑。' % name)
+        self.on_back()
 
     def buildUi(self):
-        """构建高级模式发信页整体布局
+        """构建高级模式「配置页」整体布局
 
-        左侧沿用普通模式发信页的完整写信编辑区；右侧追加「变量标记」面板（布局保持原样）。
+        配置页为四步向导（配置→负载→预览→发信）的第 1 步。
+        左侧纵向堆叠各配置区（顶部操作栏 / 四步进度 / 收件人 / 昵称 / 主题 / 附件 / 正文）；
+        右侧为常驻「变量标记」面板（选中文字 → 蓝色「标记选中为变量」按钮 → 包裹为 $变量名$）。
+        底部提供「下一步」跳转到负载配给页。本轮只搭 UI 骨架，功能逻辑待后续接入。
         """
-        # 页面整体横排：左=写信编辑区，右=变量标记面板
-        root = QHBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(8)
+        # 页面整体纵向布局
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 10, 12, 12)
+        root.setSpacing(10)
+        self.setStyleSheet(CONFIG_STYLE)
 
-        # ---- 左侧：完整写信编辑区（与普通模式一致）----
-        left = QWidget()
-        lv = QVBoxLayout(left)
-        lv.setContentsMargins(12, 10, 12, 12)
-        lv.setSpacing(6)
+        # 1. 顶部操作栏（返回 / 存草稿 / 预览等；发送/附件/设置按钮此页隐藏，发送在第4步）
+        root.addLayout(self.buildTopBar())
+        self.back_btn.setVisible(True)
+        if getattr(self, 'send_btn', None):
+            self.send_btn.setVisible(False)          # 配置页不发送
+        if getattr(self, 'attach_menu_btn', None):
+            self.attach_menu_btn.setVisible(False)    # 附件在下方分区配置
+        if getattr(self, 'setting_menu_btn', None):
+            self.setting_menu_btn.setVisible(False)   # 设置移至后续页
 
-        # 1. 顶部操作栏（返回/存草稿/恢复/发送/预览/附件▼/发信设置▼）
-        lv.addLayout(self.buildTopBar())
+        # 2. 四步进度指示器（存引用，切步时动态更新高亮）
+        self._indicator_host = self.buildStepIndicator(1)
+        root.addWidget(self._indicator_host)
 
-        # 2. 收件人区（抄送/密送可展开、分别发送、收件人选择/查看所有收件人）
-        lv.addLayout(self.buildRecipientArea())
+        # 2.1 任务信息条：任务名（可自定义，默认「高级模式任务x」）+ 说明
+        task_row = QHBoxLayout()
+        task_row.setSpacing(8)
+        task_lab = QLabel('任务名称：')
+        task_lab.setStyleSheet('color:#374151; font-weight:600;')
+        task_row.addWidget(task_lab)
+        # 任务名输入框（默认名「高级模式任务x」，进入页面时由 _initTaskName 生成）
+        self.task_name_edit = QLineEdit()
+        self.task_name_edit.setPlaceholderText('高级模式任务x')
+        self.task_name_edit.setMaximumWidth(340)
+        self.task_name_edit.setStyleSheet(
+            'QLineEdit{padding:5px 8px; border:1px solid #d0d7e2; border-radius:4px; '
+            'background:#fff; font-size:13px; background-color:#fffef0;}')
+        task_row.addWidget(self.task_name_edit, 0)
+        task_tip = QLabel('「存草稿」可保存本任务全部配置，之后可到草稿箱恢复继续编辑。')
+        task_tip.setObjectName('yellowTip')
+        task_tip.setWordWrap(True)
+        task_row.addWidget(task_tip, 1)
+        root.addLayout(task_row)
 
-        # 3. 主题行 + 「标记为变量」按钮（选中文字包裹为 {{变量名}}）
-        title_row = self.buildTitleRow()          # 内部创建 self.title_edit
-        mark_title_btn = QPushButton('标记为变量')
-        mark_title_btn.setToolTip('将主题中选中的文字包裹为 {{变量名}}')
-        mark_title_btn.clicked.connect(lambda: self._markSelectionAsVariable(self.title_edit))
-        title_row.addWidget(mark_title_btn)
-        lv.addLayout(title_row)
+        # 3. 主体：左=配置区，右=变量标记面板（用分割器，可自由拖动分隔大小）
+        self.body_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.body_splitter.setChildrenCollapsible(False)
+        self.body_splitter.setHandleWidth(6)
 
-        # 4. 正文编辑器（先创建，工具栏/变量槽函数需引用它）
+        # ---- 左侧配置区（放入滚动容器，避免窗口过小时内容被挤压出界）----
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll.setStyleSheet('background:transparent;')
+        left_host = QWidget()
+        lv = QVBoxLayout(left_host)
+        lv.setContentsMargins(0, 0, 0, 0)
+        lv.setSpacing(10)
+
+        # 3.1 收件人区（收件人是负载对齐的行主键）
+        lv.addWidget(self._makeSection('收件人（行主键）',
+                                      '每一行收件人对应一组负载，第 k 个收件人取各组负载的第 k 条数据',
+                                      lambda: self._wrapLayout1(self.buildRecipientArea())))
+
+        # 3.2 昵称配置（可标记变量，多标记按出现顺序命名）
+        self.nickname_edit = MarkableLineEdit()   # 支持变量段局部高亮
+        self.nickname_edit.setPlaceholderText('发件人昵称，可选中后标记为变量（可不填）')
+        lv.addWidget(self._makeSection('昵称', '支持标记变量，例如 $昵称1$、$昵称2$…',
+                                       lambda: self._wrapInput(self.nickname_edit)))
+
+        # 3.3 主题配置（可标记变量，多标记按出现顺序命名）
+        lv.addWidget(self._makeSection('主题', '支持标记变量，例如 $主题1$、$主题2$…',
+                                       lambda: self._wrapLayout1(self.buildTitleRow())))
+
+        # 3.4 正文配置（富文本 + 标记变量；置于附件之前，占据更大空间）
         self.body_editor = QTextEdit()
         self.body_editor.setAcceptRichText(True)
-        self.body_editor.setPlaceholderText('输入正文，选中文字后点「标记为变量」')
+        self.body_editor.setPlaceholderText('输入正文，选中文字后点右侧「标记选中为变量」')
+        self.body_editor.setMinimumHeight(300)   # 正文编辑区更高，容纳更多内容
         self.body_editor.textChanged.connect(self._updateVariableList)
-
-        # 5. 两行富文本工具栏
-        lv.addWidget(self.buildToolbarRow1())
-        lv.addWidget(self.buildToolbarRow2())
-
-        # 6. 正文变量操作按钮行（标记选中/删除光标处变量）
+        body_section = self._makeSection('正文', '支持标记变量，仅替换文本内容，不支持图像/媒体',
+                                         lambda: self._wrapPlain(self.body_editor))
+        # 正文下方：富文本工具栏 + 变量操作行
+        body_col = QVBoxLayout()
+        body_col.setSpacing(2)
+        body_col.addWidget(self.buildToolbarRow1())
+        body_col.addWidget(self.buildToolbarRow2())
+        body_col.addWidget(self.body_editor)
         body_btn_row = QHBoxLayout()
-        mark_body_btn = QPushButton('标记选中为变量')
-        mark_body_btn.setToolTip('将正文中选中的文字包裹为 {{变量名}}')
-        mark_body_btn.clicked.connect(lambda: self._markSelectionAsVariable(self.body_editor))
-        body_btn_row.addWidget(mark_body_btn)
-        remove_body_btn = QPushButton('删除选中变量')
-        remove_body_btn.setToolTip('删除光标所在位置的 {{变量名}}')
+        remove_body_btn = QPushButton('删除光标处变量')
+        remove_body_btn.setToolTip('删除光标所在位置的 $变量名$')
         remove_body_btn.clicked.connect(lambda: self._removeVariableAtCursor(self.body_editor))
         body_btn_row.addWidget(remove_body_btn)
         body_btn_row.addStretch()
-        lv.addLayout(body_btn_row)
+        body_col.addLayout(body_btn_row)
+        body_section.layout().addLayout(body_col)
+        lv.addWidget(body_section)
 
-        # 7. 正文编辑器（拉伸填充剩余空间）
-        lv.addWidget(self.body_editor, 1)
+        # 3.5 附件配置（固定 / 不固定双模式；置于正文之后，占更少空间）
+        lv.addWidget(self.buildAttachmentConfig())
 
-        # 8. 附件区（默认折叠，点击「附件」添加后展开）
-        self.attachment_area = self.buildAttachmentArea()
-        self.attachment_area.setVisible(False)
-        lv.addWidget(self.attachment_area)
+        lv.addStretch()
+        left_scroll.setWidget(left_host)
+        self.body_splitter.addWidget(left_scroll)   # 左侧：配置区
 
-        # 9. 底部发件人栏
-        lv.addLayout(self.buildSenderRow())
+        # ---- 右侧：变量标记面板 ----
+        self.body_splitter.addWidget(self._buildVariablePanel())
+        # 初始宽度：左 3 / 右 2，比例自由拖拽
+        self.body_splitter.setStretchFactor(0, 3)
+        self.body_splitter.setStretchFactor(1, 2)
+        self.body_splitter.setSizes([600, 300])
 
-        root.addWidget(left, 3)   # 左侧占 3 份
+        # 3. 步骤栈：第1步配置页 → 第2步负载配给 → 第3步绑定/对应 → 第4步预览 → 第5步发信
+        self.step_stack = QStackedWidget()
+        root.addWidget(self.step_stack, 1)
 
-        # ---- 右侧：变量标记面板（布局保持原样）----
-        right_panel = QVBoxLayout()
-        right_panel.setSpacing(6)
-        right_panel.addWidget(QLabel('变量位置（Payload Positions）'))
-        right_panel.addWidget(QLabel('标记 {{变量名}} 将在发送时被替换'))
+        # 3.1 第 1 步：配置页（左侧配置区 + 右侧变量面板 = body_splitter）
+        config_page = QWidget()
+        config_page.setObjectName('stepPage')
+        cp_layout = QVBoxLayout(config_page)
+        cp_layout.setContentsMargins(0, 0, 0, 0)
+        cp_layout.addWidget(self.body_splitter)
+        self.step_stack.addWidget(config_page)
+
+        # 3.2 第 2 步：负载配给页
+        self.step_stack.addWidget(self._buildLoadStep())
+
+        # 3.3 第 3 步：绑定关系与对应关系页
+        self.step_stack.addWidget(self._buildRelationStep())
+
+        # 3.4 第 4 步：预览页（按负载分段生成邮件并列表展示）
+        self.step_stack.addWidget(self._buildPreviewStep())
+
+        # 3.5 第 5 步：发信页（逐封发送 + 状态展示 + 失败重发）
+        self.step_stack.addWidget(self._buildSendStep())
+
+        # 默认停留在配置页
+        self.step_stack.setCurrentIndex(0)
+
+        # 4. 底部导航（上一步/下一步，随步骤动态更新可用状态）
+        root.addLayout(self.buildStepFooter())
+
+        # 主题/昵称输入变化时刷新变量列表
+        self.title_edit.textChanged.connect(self._updateVariableList)
+        if hasattr(self, 'nickname_edit'):
+            self.nickname_edit.textChanged.connect(self._updateVariableList)
+        self._updateVariableList()
+
+        # ---- 关键修复：连接 selectionChanged 信号以记录最后选中的控件 ----
+        # 解决 QLineEdit 失焦后 selectedText() 被清除导致判断错误的问题
+        if hasattr(self, 'nickname_edit'):
+            self.nickname_edit.selectionChanged.connect(self._onSelectionChanged)
+        self.title_edit.selectionChanged.connect(self._onSelectionChanged)
+        self.body_editor.selectionChanged.connect(self._onSelectionChanged)
+        # 初始化记录变量
+        self._last_selected_widget = None
+        self._last_selected_text = ''
+        self._last_selection_start = -1
+        self._last_selection_length = 0
+
+    # ---------------- 配置页子构件 ----------------
+
+    def _wrapLayout1(self, layout):
+        """把一个布局装入单 Widget（供 Section 复用点连接）"""
+        w = QWidget()
+        w.setLayout(layout)
+        w.layout().setContentsMargins(0, 0, 0, 0)
+        return w
+
+    def _wrapInput(self, edit):
+        """把单行输入框装入 Widget（供 Section 复用点连接）"""
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(edit, 1)
+        return w
+
+    def _wrapPlain(self, edit):
+        """把正文编辑器装入 Widget（供 Section 复用点连接）"""
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(edit, 1)
+        return w
+
+    def _makeSection(self, title, hint, content_factory):
+        """生成一个分组视觉区块：标题 + 提示 + 内容区
+
+        参数：
+            title<str>：区块标题
+            hint<str>：区块说明文字
+            content_factory<callable>：返回可加入布局的控件/布局
+        """
+        frame = QFrame()
+        frame.setObjectName('configSection')
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(6)
+        title_label = QLabel(title)
+        title_label.setObjectName('sectionTitle')
+        lay.addWidget(title_label)
+        if hint:
+            hint_label = QLabel(hint)
+            hint_label.setObjectName('sectionHint')
+            hint_label.setWordWrap(True)
+            lay.addWidget(hint_label)
+        lay.addWidget(content_factory())
+        return frame
+
+    def buildStepIndicator(self, current_step):
+        """构建五步向导进度指示器
+
+        参数：
+            current_step<int>：当前所在步骤（1..5），配置=1 负载=2 绑定/对应=3 预览=4 发信=5
+
+        返回：
+            QWidget：进度条组件
+        """
+        steps = [('1', '邮件配置'), ('2', '负载配给'), ('3', '绑定/对应'),
+                 ('4', '预览'), ('5', '发信')]
+        host = QWidget()
+        lay = QHBoxLayout(host)
+        lay.setSpacing(6)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self._step_pills = []          # 记录五颗胶囊，切步时用 _refreshIndicator 更新高亮
+        for i, (num, name) in enumerate(steps):
+            step_index = i + 1
+            pill = QLabel()
+            if step_index < current_step:
+                pill.setText('%s  %s' % (num, name))
+                pill.setObjectName('stepDone')
+            elif step_index == current_step:
+                pill.setText('%s  %s' % (num, name))
+                pill.setObjectName('stepActive')
+            else:
+                pill.setText('%s  %s' % (num, name))
+                pill.setObjectName('stepTodo')
+            pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._step_pills.append(pill)
+            lay.addWidget(pill, 1)
+        return host
+
+    def _refreshIndicator(self, current_step):
+        """切换步骤后更新进度指示器当前高亮
+
+        参数：
+            current_step<int>：当前步骤 1..5
+        """
+        for i, pill in enumerate(self._step_pills):
+            idx = i + 1
+            obj = 'stepDone' if idx < current_step else \
+                ('stepActive' if idx == current_step else 'stepTodo')
+            if pill.objectName() != obj:
+                pill.setObjectName(obj)
+                # 强制重新应用样式（objectName 变更后需 unpolish/polish 才能刷新)
+                pill.style().unpolish(pill)
+                pill.style().polish(pill)
+
+    def buildStepFooter(self):
+        """构建底部导航条：左「上一步」（第1步禁用）+ 右「下一步」
+
+        返回：
+            QHBoxLayout：底部导航布局
+        """
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        # 上一步：配置页为第 1 步，禁用；进入后续步骤后启用
+        self.prev_step_btn = QPushButton('← 上一步')
+        self.prev_step_btn.setEnabled(False)
+        self.prev_step_btn.clicked.connect(self._onGoPrevStep)
+        row.addWidget(self.prev_step_btn)
+        row.addStretch()
+        # 下一步：跳转到负载配给页（第1步→第2步）
+        self.next_step_btn = QPushButton('下一步 →')
+        self.next_step_btn.setObjectName('primaryBtn')
+        self.next_step_btn.setMinimumWidth(120)
+        self.next_step_btn.setMinimumHeight(36)
+        self.next_step_btn.clicked.connect(self._onGoNextStep)
+        row.addWidget(self.next_step_btn)
+        return row
+
+    def _refreshFooter(self, current_step):
+        """切步后更新底部按钮状态
+
+        参数：
+            current_step<int>：当前步骤 1..5
+        """
+        # 第1步不能回退；其余可回退
+        self.prev_step_btn.setEnabled(current_step > 1)
+        # 第5步（发信页）没有“下一步”，而是“发送”
+        if current_step == 5:
+            self.next_step_btn.setText('发送 →')
+        else:
+            self.next_step_btn.setText('下一步 →')
+
+    def _onGoNextStep(self):
+        """「下一步」点击：进入下一向导步骤，并在进入负载页前收集变量生成负载列表；
+        从负载页进入后续页前校验全部标记已绑定文件"""
+        # 发送中禁止切换：强制停留在发信页
+        if self._isSending():
+            QMessageBox.information(self, '提示', '发送正在进行中，请等待完成后再切换。')
+            return
+        cur = self.step_stack.currentIndex()
+        # 由第1步（配置页）进入第2步（负载配给页）：
+        # 首次构建负载列表；之后再返回时只增不减地并入配置页新增的标记（不清除既有绑定）
+        if cur == 0:
+            if not self._load_state_initialized:
+                self._rebuildLoadList()
+                self._load_state_initialized = True
+            else:
+                self._syncLoadList()
+        # 第2步→第3步：校验全部标记已绑定，未绑定则弹窗提示阻止前进
+        if cur == 1:
+            total = len(self._marker_keys)
+            if total == 0:
+                QMessageBox.warning(self, '配置不完整',
+                                    '当前没有检测到任何标记。\n请返回配置页，在昵称/主题/正文中标记变量。')
+                return
+            unbound = [self._marker_names.get(k, k) for k in self._marker_keys
+                       if k not in self._load_map or not self._load_map[k]]
+            if unbound:
+                QMessageBox.warning(self, '配置不完整',
+                                    '以下 %d 个标记尚未绑定数据文件：\n\n%s\n\n'
+                                    '请在「标记」下拉中选择对应标记并点击「选择文件…」完成绑定。'
+                                    % (len(unbound), '\n'.join('  · ' + n for n in unbound)))
+                return
+        # 第3步→第4步（进入预览页）：首次进入时初始化邮件批次
+        if cur == 2:
+            self._initPreviewIfNeeded()
+        # 第4步→第5步（进入发信页）：首次进入才构建发送列表，切走再回不重置
+        if cur == 3:
+            self._ensureSendTableBuilt()
+        # 第5步（发信页）：按钮为「发送」，点击时触发批量发送而非继续前进
+        if cur == 4:
+            self._onStartBatchSend()
+            return
+        # 越界保护
+        if cur + 1 >= self.step_stack.count():
+            return
+        nxt = cur + 1
+        self.step_stack.setCurrentIndex(nxt)
+        self._refreshIndicator(nxt + 1)
+        self._refreshFooter(nxt + 1)
+
+    def _onGoPrevStep(self):
+        """「上一步」点击：返回上一向导步骤"""
+        # 发送中禁止切换：强制停留在发信页
+        if self._isSending():
+            QMessageBox.information(self, '提示', '发送正在进行中，请等待完成后再切换。')
+            return
+        cur = self.step_stack.currentIndex()
+        if cur <= 0:
+            return
+        prev = cur - 1
+        self.step_stack.setCurrentIndex(prev)
+        self._refreshIndicator(prev + 1)
+        self._refreshFooter(prev + 1)
+
+    def _buildSendStep(self):
+        """构建第 5 步「发信」页 UI：逐步展示每个收件人邮件的发送状态
+
+        布局：
+          ① 顶部：页面标题 + 发送前的提示文案
+          ② 发送目标列表：QTableWidget，列 = 状态 / 收件人 / 主题 / 附件 / 结果说明
+          ③ 底部：发送汇总状态 + 重发失败按钮（仅在存在失败邮件时可用）
+        返回：
+            QWidget：发信页
+        """
+        page = QWidget()
+        page.setObjectName('stepPage')
+        root = QVBoxLayout(page)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(10)
+
+        # ---- ① 标题 + 提示 ----
+        tl = QLabel('发送')
+        tl.setObjectName('loadSectionTitle')
+        root.addWidget(tl)
+        hint = QLabel('点击底部「发送 →」即逐封发送以下邮件。\n'
+                      '每封之间自动随机间隔，避免被判定为垃圾邮件；失败的邮件将标记状态，发送后可重发。')
+        hint.setObjectName('loadHint')
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        # ---- ② 发送目标列表 ----
+        self.send_table = QTableWidget(0, 7)
+        self.send_table.setObjectName('sendTable')
+        self.send_table.setHorizontalHeaderLabels(
+            ['状态', '收件人邮箱', '主题', '附件', '结果', '发送时间', '操作'])
+        self.send_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents)
+        self.send_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch)
+        self.send_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch)
+        self.send_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.ResizeToContents)
+        self.send_table.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.ResizeMode.Stretch)
+        self.send_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.ResizeMode.ResizeToContents)
+        self.send_table.horizontalHeader().setSectionResizeMode(
+            6, QHeaderView.ResizeMode.ResizeToContents)
+        self.send_table.verticalHeader().setVisible(False)
+        root.addWidget(self.send_table, 1)
+
+        # ---- ③ 底部状态 + 重发 ----
+        foot = QHBoxLayout()
+        self.send_summary_label = QLabel('尚未发送')
+        self.send_summary_label.setObjectName('sendHint')
+        foot.addWidget(self.send_summary_label)
+        foot.addStretch()
+        self.retry_failed_btn = QPushButton('重发失败邮件')
+        self.retry_failed_btn.setEnabled(False)
+        self.retry_failed_btn.clicked.connect(self._onRetryFailed)
+        foot.addWidget(self.retry_failed_btn)
+        root.addLayout(foot)
+
+        # 初始化发送控制状态（跨步骤往返均不重置）
+        self._send_worker = None          # 当前发送线程
+        self._send_status = []            # 每封的状态：空闲/发送中/成功/失败
+        self._send_times = []             # 每封的发送时间（HH:MM:SS，发送后记录）
+        self._send_ready_items = []       # 待发送项（含单封 NormalMode 构造所需字段）
+        self._send_success_count = 0
+        self._send_fail_count = 0
+        self._send_prepared = False       # 是否已为当前预览批次构建过表（保证切换不重置）
+        return page
+
+    def _buildSendItems(self):
+        """根据预览批次生成「待发送」项列表，供发信页逐封发送
+
+        发送内容使用第 4 步生成并经用户编辑后的 _preview_mails：
+        每封对应一个收件人，主题/正文/附件取自该封预览数据；每封独立构造 NormalMode 参数。
+        返回：
+            list<dict>：发送项（含 to_list、email_title、html_text、attachment_paths 等字段）
+        """
+        # 发件人/回信/退信/内嵌图等公共配置自配置页取值
+        reply_to = self.reply_edit.text().strip()
+        return_email = self.return_edit.text().strip()
+        inline_images = dict(self.inline_image_paths) if getattr(self, 'inline_image_paths', None) else None
+        cc_list = None
+        bcc_list = None
+        items = []
+        for mail in self._preview_mails:
+            # 每封发件人昵称优先用该封配置页的发件人昵称（已是变量替换后的值）；
+            # 未填则回退底部 from_edit，仍空用默认占位名
+            per_sender = (mail.get('nickname') or '').strip() \
+                or self.from_edit.text().strip() or DEFAULT_FROM_NAME
+            items.append(dict(
+                n_name=per_sender,
+                to_list=[mail['email']],
+                email_title=mail['title'],
+                html_text=mail['html'],
+                attachment_paths=list(mail.get('attachments') or []),
+                inline_image_paths=inline_images,
+                cc_list=cc_list,
+                bcc_list=bcc_list,
+                reply_to=reply_to,
+                return_email=return_email,
+            ))
+        return items
+
+    def _ensureSendTableBuilt(self):
+        """首次进入发信页时构建发送列表（切换步骤不重建，保留已发送状态）
+
+        仅当 _send_prepared 为 False（尚未为当前预览批次构建）时才初始化；
+        此后切走再回会保留已有的 成功/失败/发送时间 等固定状态。
+        """
+        if self._send_prepared:
+            return
+        mails = self._preview_mails
+        self._send_prepared = True
+        self.send_table.setRowCount(0)
+        self.send_table.setRowCount(len(mails))
+        # 状态数组：只有第一次构建时初始化为「待发送」，此后仅由发送回调改写
+        if len(self._send_status) != len(mails):
+            self._send_status = ['空闲'] * len(mails)
+        if len(self._send_times) != len(mails):
+            self._send_times = [''] * len(mails)
+        for i, mail in enumerate(mails):
+            # ---- 状态列 ----
+            cur_state = self._getDisplayState(self._send_status[i])
+            status_item = QTableWidgetItem(cur_state)
+            self.send_table.setItem(i, 0, status_item)
+            # ---- 收件人、主题、附件列 ----
+            self.send_table.setItem(i, 1, QTableWidgetItem(mail['email']))
+            self.send_table.setItem(i, 2, QTableWidgetItem(mail['title'] or '(无主题)'))
+            attach_text = '%d 个附件' % len(mail.get('attachments') or []) \
+                if mail.get('attachments') else '无附件'
+            self.send_table.setItem(i, 3, QTableWidgetItem(attach_text))
+            # ---- 结果、发送时间列 ----
+            self.send_table.setItem(i, 4, QTableWidgetItem(''))
+            self.send_table.setItem(i, 5, QTableWidgetItem(self._send_times[i]))
+            # ---- 操作列：逐封重发按钮（默认禁用，失败后启用）----
+            retry_btn = QPushButton('重发')
+            retry_btn.setEnabled(False)
+            retry_btn.clicked.connect(lambda _=False, row=i: self._onRetryOne(row))
+            self.send_table.setCellWidget(i, 6, self._wrapRetryBtn(retry_btn, False))
+            # 若此前已失败，恢复禁用态的重发按钮为可点
+            if self._send_status[i] == '失败':
+                self._setRowRetryEnabled(i, True)
+        self._send_success_count = 0
+        self._send_fail_count = 0
+        self._updateSendSummary()
+
+    @staticmethod
+    def _wrapRetryBtn(btn, enabled):
+        """把逐封重发按钮包进一个容器（便于居中且不随行高度拉伸）"""
+        box = QWidget()
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(6, 2, 6, 2)
+        lay.addWidget(btn)
+        box.btn = btn
+        box.btn_enabled = enabled
+        return box
+
+    def _getDisplayState(self, state):
+        """把内部状态词转成界面展示文案
+
+        参数：
+            state<str>：内部状态（空闲/发送中/成功/失败）
+        返回：
+            str：界面展示文案
+        """
+        return {
+            '空闲': '待发送',
+            '发送中': '正在发送…',
+            '成功': '成功',
+            '失败': '失败',
+        }.get(state, '待发送')
+
+    def _setRowStatus(self, row, state, color=None):
+        """设置某行状态列文案与颜色，并同步内部状态
+
+        参数：
+            row<int>：行号
+            state<str>：内部状态词
+            color<QColor|None>：状态文字颜色（为空则用默认灰）
+        """
+        self._send_status[row] = state
+        item = QTableWidgetItem(self._getDisplayState(state))
+        if color is not None:
+            item.setForeground(color)
+        self.send_table.setItem(row, 0, item)
+
+    def _setRowRetryEnabled(self, row, enabled):
+        """启用/禁用某行逐封重发按钮
+
+        失败时按钮呈红色「重新发送」样式并允许点击，其余状态恢复默认灰态。
+        参数：
+            row<int>：行号
+            enabled<bool>：是否启用（True=失败可重发）
+        """
+        box = self.send_table.cellWidget(row, 6)
+        if box is None or getattr(box, 'btn', None) is None:
+            return
+        btn = box.btn
+        btn.setEnabled(enabled)
+        if enabled:
+            # 失败时：红色警示 + 文案「重新发送」+ 恢复置灰的禁用态
+            btn.setText('重新发送')
+            btn.setStyleSheet(
+                'QPushButton{background:#dc2626;color:#fff;border:0;'
+                'border-radius:4px;padding:4px 10px;}'
+                'QPushButton:hover{background:#b91c1c;}')
+        else:
+            btn.setText('重发')
+            btn.setStyleSheet('')
+
+    def _onRetryOne(self, row):
+        """点某行「重发」：仅重发该行一封邮件"""
+        if row < 0 or row >= len(self._send_ready_items):
+            return
+        if self._isSending():
+            QMessageBox.information(self, '提示', '发送正在进行中，请稍候…')
+            return
+        item = self._send_ready_items[row]
+        # 置为发送中
+        self._setRowStatus(row, '发送中', QColor('#2563eb'))
+        self.send_table.setItem(row, 4, QTableWidgetItem(''))
+        self._send_fail_count = max(0, self._send_fail_count - 1)
+        self._updateSendSummary()
+        # 启动单封重发线程
+        self.retry_failed_btn.setEnabled(False)
+        self._setFooterSendState(True)
+        self._send_worker = BatchSendWorker([item])
+        self._send_worker.mail_done.connect(
+            lambda sub, ok, msg, g=row: self._onMailSentFinished(g, ok, msg))
+        self._send_worker.all_done.connect(self._onAllMailSent)
+        self._send_worker.start()
+
+    def _updateSendSummary(self):
+        """刷新发信页底部汇总状态文本"""
+        total = len(self._preview_mails)
+        self.send_summary_label.setText(
+            '共 %d 封 · 成功 %d · 失败 %d%s' % (
+                total, self._send_success_count, self._send_fail_count,
+                '' if total else ''))
+
+    def _onStartBatchSend(self):
+        """「发送」点击：构造待发送项、构建发送列表（首次）、启动批量发送线程
+
+        发送前弹出「开始发送邮件，请耐心等待！」提示；
+        发送过程中各邮件的状态实时更新。全部完成后状态固定，切走再回不重置。
+        """
+        if not self._preview_mails:
+            QMessageBox.warning(self, '提示', '没有可发送的邮件，请先完成预览生成。')
+            return
+        # 防止重复点击启动多个发送线程
+        if self._isSending():
+            QMessageBox.information(self, '提示', '发送正在进行中，请稍候…')
+            return
+        self._ensureSendTableBuilt()
+        # 若本次预览已发送过邮件（存在成功/失败状态），再次点击发送时二次确认，避免误重复发送
+        if any(s in ('成功', '失败') for s in self._send_status):
+            reply = QMessageBox.question(
+                self, '发送确认',
+                '检测到已发送过邮件，再次发送将重复发送这些邮件。\n\n是否继续发送？',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if reply != QMessageBox.StandardButton.Yes:
+                return  # 用户选择取消，不发送
+        # 构造发送项
+        self._setFooterSendState(True)
+        self._send_ready_items = self._buildSendItems()
+        # 弹提示
+        QMessageBox.information(self, '开始发送', '开始发送邮件，请耐心等待！')
+        # 启动后台批量发送线程
+        self._send_worker = BatchSendWorker(self._send_ready_items)
+        self._send_worker.mail_started.connect(self._onMailStarted)
+        self._send_worker.mail_done.connect(self._onMailSentFinished)
+        self._send_worker.all_done.connect(self._onAllMailSent)
+        self._send_worker.start()
+
+    def _onMailStarted(self, idx):
+        """某行邮件开始发送回调：把状态改为「正在发送…」
+
+        参数：
+            idx<int>：行号
+        """
+        if idx < 0 or idx >= self.send_table.rowCount():
+            return
+        self._setRowStatus(idx, '发送中', QColor('#2563eb'))
+        self.send_table.setItem(idx, 4, QTableWidgetItem(''))
+
+    def _onMailSentFinished(self, idx, success, msg):
+        """单封发送完成回调：更新状态列、结果列、发送时间列与逐封重发按钮
+
+        参数：
+            idx<int>：行号
+            success<bool>：是否成功
+            msg<str>：结果说明
+        """
+        if idx < 0 or idx >= self.send_table.rowCount():
+            return
+        # 更新状态与结果（成功/失败均固定，此后切走再回不再变动）
+        state = '成功' if success else '失败'
+        color = QColor('#16a34a') if success else QColor('#dc2626')
+        self._setRowStatus(idx, state, color)
+        self.send_table.setItem(idx, 4, QTableWidgetItem(msg))
+        # 记录发送时间
+        self._send_times[idx] = datetime.now().strftime('%H:%M:%S')
+        self.send_table.setItem(idx, 5, QTableWidgetItem(self._send_times[idx]))
+        # 失败时启用该行逐封重发按钮
+        self._setRowRetryEnabled(idx, not success)
+        # 计数
+        if success:
+            self._send_success_count += 1
+        else:
+            self._send_fail_count += 1
+        self._updateSendSummary()
+
+    def _recordSentTask(self, ok_cnt):
+        """发送成功后把本次高级模式任务及其下成功邮件写入数据库「已发送」
+
+        若全部失败（ok_cnt==0）不写任务记录；任务名取用户自定义或默认值。
+        任务配置保存为可复现快照，任务下每封成功邮件单独落库（关联 task_id）。
+        """
+        if ok_cnt <= 0:
+            return
+        name = self._currentTaskName()
+        # 取成功发送的邮件（状态为「成功」）
+        sent_mails = [mail for i, mail in enumerate(self._preview_mails)
+                      if i < len(self._send_status) and self._send_status[i] == '成功']
+        if not sent_mails:
+            return
+        cfg = self._serializeTaskConfig()
+        # 若当前是从草稿恢复的任务且已存在草稿任务，发送后将其改到「已发送」
+        existing_id = getattr(self, '_current_task_id', None)
+        if existing_id is not None and self.db.getTask(existing_id) is not None:
+            task_id = existing_id
+            self.db.updateTask(task_id, name=name, config=cfg,
+                               category=CATEGORY_SENT, mail_count=len(sent_mails))
+        else:
+            task_id = self.db.insertTask(
+                CATEGORY_SENT, name=name, config=cfg, mail_count=len(sent_mails))
+        self._current_task_id = task_id
+        # 逐封写「已发送」（收件人/主题/正文各不相同）
+        for mail in sent_mails:
+            self.db.insertMail(
+                CATEGORY_SENT,
+                title=mail.get('title') or '',
+                recipient=mail.get('email') or '',
+                from_name=mail.get('nickname') or '',
+                to_list=[mail.get('email') or ''],
+                cc_list=[], bcc_list=[],
+                reply_to=self.reply_edit.text().strip(),
+                return_email=self.return_edit.text().strip(),
+                html_text=mail.get('html') or '',
+                attachment_paths=list(mail.get('attachments') or []),
+                task_id=task_id)
+
+    def _onAllMailSent(self, ok_cnt, fail_cnt):
+        """全部发送完成回调：落库已发送任务、恢复按钮、提示结果、控制批量重发可用性
+
+        成功发送后把本任务及成功邮件写入数据库「已发送」，保证列表页可见。
+        参数：
+            ok_cnt<int>：成功数
+            fail_cnt<int>：失败数
+        """
+        self._setFooterSendState(False)
+        # 存在失败时启用「重发失败邮件」
+        self.retry_failed_btn.setEnabled(fail_cnt > 0)
+        # 本次任务写入「已发送」（至少一封成功）
+        self._recordSentTask(ok_cnt)
+        if fail_cnt == 0:
+            QMessageBox.information(self, '全部发送成功',
+                                    '共 %d 封邮件已全部发送成功！' % ok_cnt)
+        else:
+            QMessageBox.warning(self, '部分发送失败',
+                                '成功 %d 封，失败 %d 封。可点击「重发失败邮件」重试失败的邮件。'
+                                % (ok_cnt, fail_cnt))
+
+    def _onRetryFailed(self):
+        """「重发失败邮件」点击：仅对状态为失败的邮件再次批量发送"""
+        # 收集失败项及其在完成态列表中的索引（记入重发映射，供回调定位行号）
+        failed_items = []
+        failed_global_rows = []
+        for i, item in enumerate(self._send_ready_items):
+            if self._send_status[i] == '失败':
+                failed_global_rows.append(i)
+                failed_items.append(item)
+        if not failed_items:
+            self.retry_failed_btn.setEnabled(False)
+            return
+        # 记录「重发项序号 -> 全局行号」映射，供重发回调写回正确行
+        self._retry_row_map = failed_global_rows
+        # 清理旧计数（重发后按新结果重新统计）
+        self._send_fail_count = 0
+        self._send_success_count = 0
+        self._updateSendSummary()
+        # 启动重发线程
+        self._setFooterSendState(True)
+        self._send_worker = BatchSendWorker(failed_items)
+        self._send_worker.mail_started.connect(self._onRetryMailStarted)
+        self._send_worker.mail_done.connect(self._onRetryMailFinished)
+        self._send_worker.all_done.connect(self._onRetryAllFinished)
+        self._send_worker.start()
+
+    def _onRetryMailStarted(self, sub_idx):
+        """重发时某封开始发送回调：把对应原行置为「正在发送…」
+
+        参数：
+            sub_idx<int>：失败项内的下标
+        """
+        row_map = getattr(self, '_retry_row_map', [])
+        if sub_idx < 0 or sub_idx >= len(row_map):
+            return
+        global_row = row_map[sub_idx]
+        if global_row < 0 or global_row >= self.send_table.rowCount():
+            return
+        self._setRowStatus(global_row, '发送中', QColor('#2563eb'))
+        self.send_table.setItem(global_row, 4, QTableWidgetItem(''))
+
+    def _onRetryMailFinished(self, sub_idx, success, msg):
+        """重发时的单封完成回调：把结果写回原行
+
+        因重发线程只携带失败项，sub_idx 为失败项内的序号；
+        通过 _retry_row_map 映射回其在 send_ready_items 中的全局行号。
+        参数：
+            sub_idx<int>：失败项内的下标
+            success<bool>：是否成功
+            msg<str>：结果说明
+        """
+        row_map = getattr(self, '_retry_row_map', [])
+        if sub_idx < 0 or sub_idx >= len(row_map):
+            return
+        global_row = row_map[sub_idx]
+        if global_row < 0 or global_row >= self.send_table.rowCount():
+            return
+        state = '成功' if success else '失败'
+        color = QColor('#16a34a') if success else QColor('#dc2626')
+        self._setRowStatus(global_row, state, color)
+        self.send_table.setItem(global_row, 4, QTableWidgetItem(msg))
+        # 重发后记录最新发送时间
+        self._send_times[global_row] = datetime.now().strftime('%H:%M:%S')
+        self.send_table.setItem(global_row, 5, QTableWidgetItem(self._send_times[global_row]))
+        # 重发仍失败时保留/启用该行逐封重发按钮，成功后禁用
+        self._setRowRetryEnabled(global_row, not success)
+        if success:
+            self._send_success_count += 1
+        else:
+            self._send_fail_count += 1
+        self._updateSendSummary()
+
+    def _onRetryAllFinished(self, ok_cnt, fail_cnt):
+        """重发全部完成后回调：恢复按钮并再次提示"""
+        self._setFooterSendState(False)
+        self.retry_failed_btn.setEnabled(fail_cnt > 0)
+        if fail_cnt == 0:
+            QMessageBox.information(self, '重发完成', '失败的邮件已全部重发成功！')
+
+    def _isSending(self):
+        """判断当前是否处于批量发送中（发送线程存在且在运行）
+
+        返回：
+            bool：True=发送中
+        """
+        return self._send_worker is not None and self._send_worker.isRunning()
+
+    def _setFooterSendState(self, sending):
+        """切换发信页底部导航按钮的交互状态（发送中全部禁用，结束恢复）
+
+        发送期间强制停留在发信页：同时禁用「上一步」与「发送」，阻止任何步骤切换。
+        参数：
+            sending<bool>：True=发送中（禁用），False=可操作
+        """
+        self.prev_step_btn.setEnabled(not sending)
+        self.next_step_btn.setEnabled(not sending)
+        self.next_step_btn.setText('发送中…' if sending else '发送 →')
+
+    def _buildLoadStep(self):
+        """构建第 2 步「负载配给」页 UI（Burp Suite Intruder Payload 风格）
+
+        布局：
+          ① 顶部：页面标题 + 使用提示
+          ② 标记选择区：下拉列表（列出全部标记位置）+ 配置进度
+          ③ Payload设置区：左侧按钮列（选择文件/重新加载/移除绑定）+ 右侧文件内容预览
+        返回：
+            QWidget：负载配给页（绑定关系/对应关系在其后的第 3 步展示）
+        """
+        page = QWidget()
+        page.setObjectName('stepPage')
+        root = QVBoxLayout(page)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(10)
+
+        # ---- ① 页面标题 + 提示 ----
+        title_row = QHBoxLayout()
+        title = QLabel('负载配给（Payload）')
+        title.setObjectName('loadSectionTitle')
+        title_row.addWidget(title)
+        title_row.addStretch()
+        root.addLayout(title_row)
+
+        hint = QLabel('在「标记」下拉选择一个标记 → 点击「选择文件」绑定数据文件。'
+                      '默认按「第 k 个收件人 = 每处标记的第 k 条数据」对齐。'
+                      '请先在数据文件中排好顺序；每一处标记都必须绑定一个文件。')
+        hint.setObjectName('loadHint')
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        # ---- ② 标记选择区 ----
+        mark_frame = QFrame()
+        mark_frame.setObjectName('configSection')
+        mark_lay = QVBoxLayout(mark_frame)
+        mark_lay.setContentsMargins(12, 10, 12, 10)
+        mark_lay.setSpacing(6)
+
+        mark_title = QLabel('标记选择')
+        mark_title.setObjectName('loadSubTitle')
+        mark_lay.addWidget(mark_title)
+
+        mark_row = QHBoxLayout()
+        mark_row.setSpacing(10)
+        mark_lbl = QLabel('标记：')
+        mark_lbl.setFixedWidth(50)
+        mark_row.addWidget(mark_lbl)
+        # 下拉列表：动态填充全部标记位置
+        self.mark_combo = QComboBox()
+        self.mark_combo.setObjectName('loadMarkCombo')
+        self.mark_combo.setMinimumWidth(280)
+        self.mark_combo.currentIndexChanged.connect(self._onMarkComboChanged)
+        mark_row.addWidget(self.mark_combo, 1)
+        # 配置进度标签
+        self.load_progress_label = QLabel('未检测到标记')
+        self.load_progress_label.setObjectName('loadStatusPending')
+        mark_row.addWidget(self.load_progress_label)
+        mark_lay.addLayout(mark_row)
+
+        root.addWidget(mark_frame)
+
+        # ---- ③ Payload设置区（Burp 风格：左按钮列 + 右预览）----
+        payload_frame = QFrame()
+        payload_frame.setObjectName('loadPayloadFrame')
+        payload_lay = QHBoxLayout(payload_frame)
+        payload_lay.setContentsMargins(10, 10, 10, 10)
+        payload_lay.setSpacing(8)
+
+        # 左侧按钮列（Burp Payload 设置左列按钮风格）
+        btn_col = QVBoxLayout()
+        btn_col.setSpacing(6)
+        self.pick_file_btn = QPushButton('选择文件…')
+        self.pick_file_btn.setObjectName('loadPrimaryBtn')
+        self.pick_file_btn.setMinimumWidth(90)
+        self.pick_file_btn.clicked.connect(self._onPickCurrentMarkFile)
+        btn_col.addWidget(self.pick_file_btn)
+
+        reload_btn = QPushButton('重新加载')
+        reload_btn.setObjectName('loadActionBtn')
+        reload_btn.setMinimumWidth(90)
+        reload_btn.clicked.connect(self._onReloadCurrentFile)
+        btn_col.addWidget(reload_btn)
+
+        self.remove_bind_btn = QPushButton('移除绑定')
+        self.remove_bind_btn.setObjectName('loadActionBtn')
+        self.remove_bind_btn.setMinimumWidth(90)
+        self.remove_bind_btn.clicked.connect(self._onRemoveCurrentBinding)
+        btn_col.addWidget(self.remove_bind_btn)
+
+        btn_col.addStretch()
+        payload_lay.addLayout(btn_col)
+
+        # 右侧：文件内容预览（QListWidget，等宽字体）
+        preview_col = QVBoxLayout()
+        preview_col.setSpacing(4)
+        preview_title = QLabel('文件内容预览（前 100 行）')
+        preview_title.setObjectName('loadSubTitle')
+        preview_col.addWidget(preview_title)
+
+        self.load_preview_list = QListWidget()
+        self.load_preview_list.setObjectName('loadPreviewList')
+        self.load_preview_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.load_preview_list.setMinimumHeight(220)
+        preview_col.addWidget(self.load_preview_list, 1)
+
+        # 文件信息行（路径 + 行数）
+        self.load_file_info = QLabel('尚未选择文件')
+        self.load_file_info.setObjectName('loadFileInfoEmpty')
+        preview_col.addWidget(self.load_file_info)
+
+        payload_lay.addLayout(preview_col, 1)
+        root.addWidget(payload_frame, 1)
+
+        # 初始化负载映射与标记键列表
+        self._load_map = {}          # key(str) -> 文件绝对路径(str)
+        self._marker_keys = []       # 按出现顺序的标记 key 列表
+        self._marker_names = {}      # key -> 显示名（如 "昵称标记1"）
+        self._file_row_counts = {}   # key -> 文件行数(int)，供表格显示
+        # 负载状态初始化标志：只在首次进入负载页时构建/刷新列表；
+        # 之后停留在负载页期间（含往返其他步骤）均保留已配置内容
+        self._load_state_initialized = False
+
+        return page
+
+    def _buildRelationStep(self):
+        """构建第 3 步「绑定关系与对应关系」页 UI
+
+        用页签收纳两张表：
+          - 绑定规则：全体 标记→文件 一览（未绑定标红）
+          - 对应关系展望：行 = 第 k 收件人（含邮箱号），列 = 各标记位置
+        返回：
+            QWidget：绑定关系与对应关系页
+        """
+        page = QWidget()
+        page.setObjectName('stepPage')
+        root = QVBoxLayout(page)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(10)
+
+        # 页面标题
+        title = QLabel('绑定关系与对应关系')
+        title.setObjectName('loadSectionTitle')
+        root.addWidget(title)
+
+        # 用页签收纳两张表，避免同屏过度拥挤，也便于来回切换
+        self.load_tabs = QTabWidget()
+        self.load_tabs.setObjectName('loadTabs')
+        root.addWidget(self.load_tabs, 1)
+
+        # 页签一：绑定规则（全体 标记→文件 一览，支持清除）
+        binding_host = QWidget()
+        binding_lay = QVBoxLayout(binding_host)
+        binding_lay.setContentsMargins(4, 6, 4, 4)
+        binding_lay.setSpacing(4)
+        binding_hint = QLabel('该页用于确认“每个标记对应哪个数据文件”；未绑定的标记标红。')
+        binding_hint.setObjectName('sectionHint')
+        binding_lay.addWidget(binding_hint)
+        self.binding_table = QTableWidget(0, 5)
+        self.binding_table.setObjectName('loadBindingTable')
+        self.binding_table.setHorizontalHeaderLabels(['#', '标记位置', '绑定文件', '行数', '操作'])
+        self.binding_table.horizontalHeader().setStretchLastSection(True)
+        self.binding_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.binding_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.binding_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.binding_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.binding_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.binding_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.binding_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        binding_lay.addWidget(self.binding_table, 1)
+        self.load_tabs.addTab(binding_host, '绑定规则')
+
+        # 页签二：对应关系展望（行对齐矩阵：第 k 收件人 = 各标记第 k 条数据）
+        corr_host = QWidget()
+        corr_lay = QVBoxLayout(corr_host)
+        corr_lay.setContentsMargins(4, 6, 4, 4)
+        corr_lay.setSpacing(4)
+        corr_hint = QLabel('每一行 = 第 k 条数据（第 k 个收件人，含邮箱号）；每一列 = 一个标记位置。'
+                           '横向对齐：收件人A → 昵称1第1条 → 昵称2第1条 → 正文1第1条 → … → '
+                           '附件文件夹①第1个 附件文件夹②第1个…）。')
+        corr_hint.setObjectName('sectionHint')
+        corr_hint.setWordWrap(True)
+        corr_lay.addWidget(corr_hint)
+        # 列 = 收件人/邮箱号 + 各标记位置 + 各附件文件夹；横向展示逐行对齐矩阵
+        self.corr_table = QTableWidget(0, 0)
+        self.corr_table.setObjectName('loadBindingTable')
+        self.corr_table.horizontalHeader().setDefaultSectionSize(160)
+        self.corr_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.corr_table.verticalHeader().setVisible(True)
+        self.corr_table.verticalHeader().setDefaultSectionSize(26)
+        self.corr_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.corr_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        corr_lay.addWidget(self.corr_table, 1)
+        self.load_tabs.addTab(corr_host, '对应关系展望')
+
+        return page
+
+    # ---------------- 第 4 步：预览页 ----------------
+
+    def _buildPreviewStep(self):
+        """构建第 4 步「邮件预览」页 UI
+
+        布局：
+          - 顶部状态行：已生成 x / 总数 y + 「继续生成 n 封」按钮
+          - 下方邮件列表：一封邮件一行（收件人/主题/昵称/附件），双击查看详情
+        返回：
+            QWidget：预览页
+        """
+        page = QWidget()
+        page.setObjectName('stepPage')
+        root = QVBoxLayout(page)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(10)
+
+        # ---- 顶部：标题 + 状态 ----
+        title = QLabel('邮件预览')
+        title.setObjectName('loadSectionTitle')
+        root.addWidget(title)
+
+        status_row = QHBoxLayout()
+        status_hint = QLabel('每行一封邮件；双击可点开查看并编辑。')
+        status_hint.setObjectName('sectionHint')
+        status_row.addWidget(status_hint)
+        status_row.addStretch()
+        # 生成进度文本
+        self.preview_status_label = QLabel('尚未生成')
+        self.preview_status_label.setObjectName('loadStatusPending')
+        status_row.addWidget(self.preview_status_label)
+        # 继续生成按钮（初始隐藏，总数量 > 当前已生成时显示）
+        self.gen_more_btn = QPushButton('继续生成 %d 封' % self.PREVIEW_BATCH_SIZE)
+        self.gen_more_btn.setObjectName('loadPrimaryBtn')
+        self.gen_more_btn.clicked.connect(self._onGenerateMorePreview)
+        self.gen_more_btn.setVisible(False)
+        status_row.addWidget(self.gen_more_btn)
+        root.addLayout(status_row)
+
+        # ---- 邮件列表：列 = 新邮件标记(绿点) / 序号 / 收件人 / 主题 / 昵称 / 附件 ----
+        self.preview_table = QTableWidget(0, 5)
+        self.preview_table.setObjectName('previewTable')
+        self.preview_table.setHorizontalHeaderLabels(
+            ['', '收件人邮箱', '邮件主题', '昵称', '附件信息'])
+        self.preview_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents)
+        self.preview_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents)
+        self.preview_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch)
+        self.preview_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.ResizeToContents)
+        self.preview_table.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.ResizeMode.Stretch)
+        # 序号列：默认启用，若需删除行可动态调整
+        self.preview_table.verticalHeader().setVisible(False)
+        self.preview_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.preview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # 双击行 → 打开该邮件详情编辑对话框
+        self.preview_table.cellDoubleClicked.connect(self._onPreviewRowDoubleClick)
+        root.addWidget(self.preview_table, 1)
+
+        # 预览批次状态
+        self._preview_mails = []      # 已生成的邮件 dict 列表
+        self._preview_generated = 0   # 已生成的封数
+        self._preview_total = 0       # 邮件总封数
+        self._preview_initialized = False   # 预览批次是否已初始化（切换页面不重复重置）
+
+        return page
+
+    def _generateOneMail(self, row):
+        """按负载对齐规则生成第 row 封邮件的完整内容（纯数据，不触碰 UI）
+
+        对应关系：第 row 个收件人 ↔ 每个已绑定标记文件的第 row 条数据 ⊇
+        各附件文件夹第 row 个文件。文本模板取自配置页的昵称/主题/正文，
+        把其中 $$变量$$ 逐一替换为对应行的取值。
+        参数：
+            row<int>：0 起始的行号
+        返回：
+            dict：{'email','title','nickname','html','attachments','row'}
+        """
+        # 收件人：取第 row 个邮箱
+        email_list = parseEmails(self.to_edit.text()) if hasattr(self, 'to_edit') else []
+        email = email_list[row] if row < len(email_list) else ''
+
+        # 读取每个已绑定标记对应行的原始文本数据（供变量替换）
+        row_values = {}               # key -> 该行文本
+        for k in self._marker_keys:
+            path = self._load_map.get(k)
+            if not path:
+                row_values[k] = ''
+                continue
+            rows = self._readDataRows(path)
+            row_values[k] = rows[row] if row < len(rows) else ''
+
+        # 各模板字段文本
+        nickname_tpl = getattr(self, 'nickname_edit', None)
+        nickname_tpl = nickname_tpl.text() if nickname_tpl else ''
+        title_tpl = self.title_edit.text()
+        body_tpl = self.body_editor.toHtml()   # 正文为 HTML 富文本
+
+        # 按「位置」替换：负载配给对每个位置（来源+序号）绑定一个数据文件，
+        # 故模板中某来源的第 i 个 $$变量$$ 使用该来源 key（来源:i）绑定文件的第 row 行取值。
+        nickname = self._replaceTemplate(nickname_tpl, '昵称', row_values)
+        title = self._replaceTemplate(title_tpl, '主题', row_values)
+        html = self._replaceTemplate(body_tpl, '正文', row_values)
+
+        # 附件：固定附件模式用配置页统一附件；不固定模式取各文件夹第 row 个文件
+        attachments = []           # list of 文件绝对路径
+        if self.attach_fixed_radio.isChecked():
+            attachments = list(getattr(self, 'attachment_paths', []) or [])
+        else:
+            folders = getattr(self, 'attach_folders', []) or []
+            for folder in folders:
+                names = self._scanFolderFiles(folder)
+                if row < len(names):
+                    attachments.append(os.path.join(folder, names[row]))
+                    # 缺文件就跳过该文件夹（第 row 收件人无第 row 个文件）
+
+        return {'email': email, 'title': title, 'nickname': nickname,
+                'html': html, 'attachments': attachments, 'row': row}
+
+    def _replaceTemplate(self, text, src_name, row_values):
+        """中某来源模板中的每个 $$变量$$ 替换为该来源对应位置第 row 行的取值
+
+        某来源（昵称/主题/正文）中第 i 个 $$变量$$ 对应该来源 key「来源:i」，
+        用其绑定文件当前行的取值替换；未绑定或空时保留原占位符。
+        参数：
+            text<str>：该来源模板文本
+            src_name<str>：来源标识（昵称/主题/正文），与 _collectMarkers 的 key 前缀一致
+            row_values<dict>：key -> 该位置当前行取值
+        返回：
+            str：替换后的文本
+        """
+        counter = [0]    # 用列表模拟可变计数器（某来源内第几个变量）
+        def repl(m):
+            counter[0] += 1
+            val = row_values.get('%s:%d' % (src_name, counter[0]))
+            return val if val else m.group(0)
+        return self.VARIABLE_PATTERN.sub(repl, text)
+
+    def _onPreviewRowDoubleClick(self, row, _col):
+        """双击某个邮件行 → 打开详情查看/编辑对话框
+
+        编辑后的内容写回 self._preview_mails[row]（仅预览批次，不回写负载文件）。
+        参数：
+            row<int>：被双击的行号
+            _col<int>：列号（忽略）
+        """
+        if row < 0 or row >= len(self._preview_mails):
+            return
+        mail = self._preview_mails[row]
+        self._openMailDetailDialog(mail)
+
+    def _openMailDetailDialog(self, mail):
+        """弹出某封邮件的详情查看/编辑对话框"""
+        dlg = PreviewMailDialog(self, mail)
+        dlg.exec()
+
+    def _onGenerateMorePreview(self):
+        """「继续生成」点击：生成并追加下一批邮件到列表"""
+        self._fillPreviewRows(self._preview_generated)
+
+    def _refreshPreviewStatus(self):
+        """刷新预览页顶部状态文本与「继续生成」按钮显隐"""
+        total = self._preview_total
+        cur = self._preview_generated
+        if total == 0:
+            self.preview_status_label.setText('尚无邮件')
+            self.gen_more_btn.setVisible(False)
+            return
+        self.preview_status_label.setText('已生成 %d / %d' % (cur, total))
+        # 未全部生成时才可继续
+        self.gen_more_btn.setVisible(cur < total)
+        self.gen_more_btn.setEnabled(True)
+
+    def _fillPreviewRows(self, start):
+        """生成 [start, start+n) 区间的邮件并追加到列表，更新状态
+
+        参数：
+            start<int>：当前已生成的封数，即本批起始行号
+        """
+        n = self.PREVIEW_BATCH_SIZE
+        num = min(n, self._preview_total - start)   # 本批实际生成数量
+        # 生成本批邮件数据
+        batch = [self._generateOneMail(start + i) for i in range(num)]
+        self._preview_mails.extend(batch)
+
+        # 追加到表格
+        existing = self.preview_table.rowCount()
+        self.preview_table.setRowCount(existing + num)
+        # 新生成本批的起始序号（1 起始），用于首列绿点标记
+        for i, mail in enumerate(batch):
+            r = existing + i
+            # 首列：绿色小圆点「●」标记本批新生成的邮件，方便区分
+            dot_item = QTableWidgetItem('●')
+            dot_item.setForeground(QColor('#34c759'))   # 绿色小点
+            dot_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            dot_item.setToolTip('本批新生成的邮件')
+            self.preview_table.setItem(r, 0, dot_item)
+            email_item = QTableWidgetItem(mail['email'])
+            self.preview_table.setItem(r, 1, email_item)
+            title_item = QTableWidgetItem(mail['title'] or '(无主题)')
+            self.preview_table.setItem(r, 2, title_item)
+            nick_item = QTableWidgetItem(mail['nickname'] or '')
+            self.preview_table.setItem(r, 3, nick_item)
+            # 附件信息：固定模式逐个显示文件名；不固定模式显示文件数与首文件名
+            if mail['attachments']:
+                attach_text = '%d 个附件' % len(mail['attachments'])
+            else:
+                attach_text = '无附件'
+            attach_item = QTableWidgetItem(attach_text)
+            self.preview_table.setItem(r, 4, attach_item)
+
+        self._preview_generated = start + num
+        self._refreshPreviewStatus()
+
+    def _refreshPreviewRowFor(self, mail):
+        """保存某封邮件后，刷新预览列表中对应行的摘要显示
+
+        参数：
+            mail<dict>：含 row 字段的邮件数据
+        """
+        row = mail.get('row')
+        if row is None or row < 0 or row >= self.preview_table.rowCount():
+            return
+        self.preview_table.item(row, 1).setText(mail.get('email') or '')
+        self.preview_table.item(row, 2).setText(mail.get('title') or '(无主题)')
+        self.preview_table.item(row, 3).setText(mail.get('nickname') or '')
+        attach_text = '%d 个附件' % len(mail.get('attachments') or []) \
+            if mail.get('attachments') else '无附件'
+        self.preview_table.item(row, 4).setText(attach_text)
+
+    def _initPreviewIfNeeded(self):
+        """首次进入预览页时初始化：计算总封数并生成第一段（n 封）"""
+        if self._preview_initialized:
+            return
+        # 总封数 = 收件人个数
+        email_list = parseEmails(self.to_edit.text()) if hasattr(self, 'to_edit') else []
+        total = len(email_list)
+        self._preview_total = total
+        self._preview_mails = []
+        self._preview_generated = 0
+        # 生成第一批
+        if total > 0:
+            self._fillPreviewRows(0)
+        else:
+            self._refreshPreviewStatus()
+        self._preview_initialized = True
+
+    def _collectMarkers(self):
+        """从昵称/主题/正文收集全部标记位置（按出现顺序），构建 key 与显示名映射
+
+        附件文件夹不属于负载标记：附件在配置页已单独配置，此处只收集文本变量标记。
+        返回：
+            list<tuple>：[(key, display_name), ...]，按出现顺序
+        """
+        markers = []
+        counters = {'昵称': 0, '主题': 0, '正文': 0}
+        sources = [('昵称', getattr(self, 'nickname_edit', None)),
+                   ('主题', self.title_edit),
+                   ('正文', self.body_editor)]
+        for src_name, widget in sources:
+            if widget is None:
+                continue
+            text = widget.toPlainText() if isinstance(widget, QTextEdit) else widget.text()
+            for m in self.VARIABLE_PATTERN.finditer(text):
+                counters[src_name] += 1
+                key = '%s:%d' % (src_name, counters[src_name])
+                display = '%s标记%d' % (src_name, counters[src_name])
+                markers.append((key, display))
+        return markers
+
+    def _rebuildLoadList(self):
+        """进入负载页时（首次）：收集全部标记 → 填充下拉列表 → 刷新绑定表 → 加载首个标记的预览"""
+        # 清空旧数据（仅首次进入时全量构建）
+        self._load_map = {}
+        self._marker_keys = []
+        self._marker_names = {}
+        self._file_row_counts = {}
+
+        # 收集标记
+        markers = self._collectMarkers()
+        self._marker_keys = [k for k, _ in markers]
+        self._marker_names = {k: n for k, n in markers}
+
+        # 填充下拉列表
+        self._fillMarkerCombo(markers)
+
+        # 刷新绑定表
+        self._updateBindingTable()
+        # 更新进度
+        self._updateProgress()
+
+        # 加载首个标记的预览（如有）
+        if markers:
+            self._loadMarkerPreview(markers[0][0])
+        else:
+            self._clearPreview()
+
+    def _syncLoadList(self):
+        """增量同步负载页：只增不减——保留既有标记及已绑定文件，仅并入配置页新增的标记
+
+        从配置页新增标记后，再次进入负载页时调用；不会重置/清空既有绑定，
+        只把「新出现的标记」并入下拉与绑定表（默认未绑定，待用户配置）。
+        """
+        markers = self._collectMarkers()
+        new_names = {k: n for k, n in markers}
+        # 已有标记与绑定（顺序与已绑定文件均保留）
+        existing_keys = list(getattr(self, '_marker_keys', []) or [])
+        merged_names = dict(getattr(self, '_marker_names', {}) or {})
+        merged_names.update(new_names)
+        # 只追加本次新增的标记 key（既有 key 一律保留，不做减法）
+        seen = set(existing_keys)
+        for k, n in markers:
+            if k not in seen:
+                existing_keys.append(k)
+                merged_names[k] = n
+                seen.add(k)
+        self._marker_keys = existing_keys
+        self._marker_names = merged_names
+        # 重建下拉：绑定文件保存在 _load_map 中，这里不会丢失
+        combo_items = [(k, self._marker_names.get(k, k)) for k in self._marker_keys]
+        self._fillMarkerCombo(combo_items)
+        self._updateBindingTable()
+        self._updateProgress()
+        # 有新增标记时，加载首个预览便于查看绑定状态；否则保持当前选中项
+        idx = self.mark_combo.currentIndex()
+        if idx < 0 and self._marker_keys:
+            self._loadMarkerPreview(self._marker_keys[0])
+
+    def _fillMarkerCombo(self, markers):
+        """按 (key, name) 列表填充标记下拉框，并联动启用/禁用
+
+        参数：
+            markers<list<tuple>>：[(key, display_name), ...]；为空时展示占位项并禁用
+        """
+        self.mark_combo.blockSignals(True)
+        self.mark_combo.clear()
+        if not markers:
+            self.mark_combo.addItem('（未检测到标记）')
+            self.mark_combo.setEnabled(False)
+        else:
+            self.mark_combo.setEnabled(True)
+            for key, name in markers:
+                self.mark_combo.addItem(name, key)
+        self.mark_combo.blockSignals(False)
+
+    def _onMarkComboChanged(self, index):
+        """下拉列表切换标记：加载该标记的文件绑定与预览内容
+
+        参数：
+            index<int>：下拉框当前索引
+        """
+        if index < 0:
+            self._clearPreview()
+            return
+        key = self.mark_combo.itemData(index)
+        if key is None:
+            self._clearPreview()
+            return
+        self._loadMarkerPreview(key)
+
+    def _loadMarkerPreview(self, key):
+        """为指定标记 key 加载已绑定文件的预览内容到右侧列表
+
+        参数：
+            key<str>：标记键（如 '昵称:1' / 'body:2' / 'folder:0'）
+        """
+        path = self._load_map.get(key)
+        if path and os.path.isfile(path):
+            self._previewFile(path, key)
+        else:
+            self._clearPreview()
+
+    def _clearPreview(self):
+        """清空右侧预览列表与文件信息（未绑定状态）"""
+        self.load_preview_list.clear()
+        self.load_file_info.setText('尚未选择文件')
+        self.load_file_info.setObjectName('loadFileInfoEmpty')
+        self.load_file_info.style().unpolish(self.load_file_info)
+        self.load_file_info.style().polish(self.load_file_info)
+        self.pick_file_btn.setEnabled(True)
+
+    def _previewFile(self, path, key):
+        """读取指定文件的前 100 行内容，填充到预览列表，并更新文件信息
+
+        参数：
+            path<str>：文件绝对路径
+            key<str>：标记键（用于更新行数记录）
+        """
+        self.load_preview_list.clear()
+        ext = os.path.splitext(path)[1].lower()
+        rows = 0
+        max_preview = 100
+        try:
+            if ext in ('.csv', '.txt'):
+                # CSV/TXT：逐行读取，跳过无意义的空行/纯空白行，与 _readDataRows 统计一致
+                with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+                    for line in fh:
+                        if not line.strip():
+                            continue   # 空白行不计入有效数据行
+                        if rows < max_preview:
+                            item = QListWidgetItem(line.rstrip('\n\r'))
+                            self.load_preview_list.addItem(item)
+                        rows += 1
+            elif ext in ('.xlsx', '.xls'):
+                # Excel：尝试用 openpyxl 读取第一工作表
+                try:
+                    import openpyxl
+                    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+                    ws = wb.active
+                    for row_data in ws.iter_rows(values_only=True):
+                        joined = '\t'.join([str(c) if c is not None else '' for c in row_data])
+                        if not joined.strip():
+                            continue   # 整行为空时不计数
+                        if rows < max_preview:
+                            item = QListWidgetItem(joined)
+                            self.load_preview_list.addItem(item)
+                        rows += 1
+                    wb.close()
+                except ImportError:
+                    item = QListWidgetItem('（未安装 openpyxl，无法预览 Excel 文件）')
+                    self.load_preview_list.addItem(item)
+                    rows = 0
+            else:
+                item = QListWidgetItem('（不支持的文件格式：%s）' % ext)
+                self.load_preview_list.addItem(item)
+        except Exception as exc:
+            item = QListWidgetItem('（读取文件失败：%s）' % exc)
+            self.load_preview_list.addItem(item)
+
+        # 更新行数记录
+        self._file_row_counts[key] = rows
+        # 更新文件信息标签
+        file_name = os.path.basename(path)
+        if rows > max_preview:
+            info_text = '%s  |  共 %d 行（仅预览前 %d 行）' % (file_name, rows, max_preview)
+        else:
+            info_text = '%s  |  共 %d 行' % (file_name, rows)
+        self.load_file_info.setText(info_text)
+        self.load_file_info.setObjectName('loadFileInfo')
+        self.load_file_info.style().unpolish(self.load_file_info)
+        self.load_file_info.style().polish(self.load_file_info)
+
+    def _onPickCurrentMarkFile(self):
+        """为当前下拉选中的标记选择数据文件（CSV/TXT/Excel），绑定并刷新预览与绑定表"""
+        if not self._marker_keys:
+            QMessageBox.information(self, '提示', '当前没有可绑定的标记，请先在配置页标记变量。')
+            return
+        index = self.mark_combo.currentIndex()
+        if index < 0:
+            return
+        key = self.mark_combo.itemData(index)
+        if key is None:
+            return
+        # 打开文件选择对话框
+        path, _ = QFileDialog.getOpenFileName(
+            self, '选择负载数据文件（CSV/TXT/Excel）', '', '数据文件 (*.csv *.txt *.xlsx *.xls)')
+        if not path:
+            return
+        # 绑定到当前标记
+        self._load_map[key] = path
+        # 刷新预览
+        self._previewFile(path, key)
+        # 刷新绑定表与进度
+        self._updateBindingTable()
+        self._updateProgress()
+
+    def _onReloadCurrentFile(self):
+        """重新加载当前标记绑定文件的预览（文件在外部被修改后刷新）"""
+        index = self.mark_combo.currentIndex()
+        if index < 0:
+            return
+        key = self.mark_combo.itemData(index)
+        if key is None:
+            return
+        path = self._load_map.get(key)
+        if not path:
+            QMessageBox.information(self, '提示', '当前标记尚未绑定文件。')
+            return
+        self._previewFile(path, key)
+        self._updateBindingTable()
+        self._updateProgress()
+
+    def _onRemoveCurrentBinding(self):
+        """移除当前下拉选中标记的文件绑定，清空预览与绑定表对应行"""
+        index = self.mark_combo.currentIndex()
+        if index < 0:
+            return
+        key = self.mark_combo.itemData(index)
+        if key is None:
+            return
+        if key not in self._load_map:
+            QMessageBox.information(self, '提示', '当前标记尚未绑定文件。')
+            return
+        # 确认对话框
+        ret = QMessageBox.question(
+            self, '确认移除',
+            '确定要移除「%s」的文件绑定吗？' % self._marker_names.get(key, key),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        # 移除绑定
+        self._load_map.pop(key, None)
+        self._file_row_counts.pop(key, None)
+        self._clearPreview()
+        self._updateBindingTable()
+        self._updateProgress()
+
+    def _updateBindingTable(self):
+        """刷新绑定规则表：展示全部 标记→文件 绑定，未绑定的标记以红色提示"""
+        self.binding_table.setRowCount(0)
+        row = 0
+        for key in self._marker_keys:
+            self.binding_table.insertRow(row)
+            # # 列
+            idx_item = QTableWidgetItem(str(row + 1))
+            idx_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.binding_table.setItem(row, 0, idx_item)
+            # 标记位置列
+            name_item = QTableWidgetItem(self._marker_names.get(key, key))
+            self.binding_table.setItem(row, 1, name_item)
+            # 绑定文件列
+            path = self._load_map.get(key, '')
+            if path:
+                file_item = QTableWidgetItem(os.path.basename(path))
+                file_item.setToolTip(path)
+                file_item.setForeground(QColor('#1f2329'))
+            else:
+                file_item = QTableWidgetItem('（未绑定）')
+                file_item.setForeground(QColor('#d03050'))
+            self.binding_table.setItem(row, 2, file_item)
+            # 行数列
+            count = self._file_row_counts.get(key, 0)
+            count_item = QTableWidgetItem(str(count) if path else '-')
+            count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.binding_table.setItem(row, 3, count_item)
+            # 操作列：删除按钮
+            del_btn = QPushButton('删除')
+            del_btn.setObjectName('loadDelBtn')
+            del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            del_btn.clicked.connect(lambda _=False, k=key: self._onDeleteBindingRow(k))
+            self.binding_table.setCellWidget(row, 4, del_btn)
+            row += 1
+        # 自适应列宽
+        self.binding_table.resizeRowsToContents()
+
+    def _naturalSortKey(self, name):
+        """自然排序 key：将文件名拆成「数字段 / 非数字段」交替片段
+
+        数字段转成 int 参与比较，非数字段保留字符串，使「10」「2」这类
+        数字命名的文件按数值升序（1,2,3,…,10），而非字符串序（1,10,2,…）。
+        参数：
+            name<str>：文件名
+        返回：
+            list：供 sorted(key=...) 使用的比较键
+        """
+        # 用正则把数字串切分成单独片段，再对数字片段转 int
+        return [int(part) if part.isdigit() else part
+                for part in re.split(r'(\d+)', name)]
+
+    def _scanFolderFiles(self, folder):
+        """扫描附件文件夹中的文件（仅当前层，不递归子目录），按文件名自然排序
+
+        依据之前约定的附件扫描算法：每个文件夹只取直接子文件，按文件名升序排列，
+        第 k 个收件人取排序后第 k 个文件；文件数不足则该收件人缺该文件夹。
+        参数：
+            folder<str>：附件文件夹绝对路径
+        返回：
+            list<str>：排序后的文件名列表（不含子目录、不含目录项）
+        """
+        try:
+            names = [f for f in os.listdir(folder)
+                     if os.path.isfile(os.path.join(folder, f))]
+        except OSError:
+            return []
+        # 自然排序：数字文件名（如 1..10）按数值排，避免「10」被排到「2」前面
+        return sorted(names, key=self._naturalSortKey)
+
+    def _updateCorrelationTable(self):
+        """刷新「对应关系展望」矩阵：行 = 第 k 条数据（第 k 收件人），列 = 各标记位置 + 各附件文件夹
+
+        列顺序：收件人/邮箱号 → 各文本标记 → 各附件文件夹（按添加顺序）。
+        行取所有已绑定文件与各附件文件夹文件数的最大值；附件缺行留空。
+        """
+        # 清空表格
+        self.corr_table.clear()
+        self.corr_table.setRowCount(0)
+        self.corr_table.setColumnCount(0)
+
+        # 收集所有已绑定文件的标记 key（保持 _marker_keys 的展示顺序）
+        bound_keys = [k for k in self._marker_keys if self._load_map.get(k)]
+        # 收集附件文件夹（不固定附件模式下配置页添加的文件夹列表）
+        folders = list(getattr(self, 'attach_folders', []) or [])
+
+        if not bound_keys and not folders:
+            self.corr_table.setColumnCount(1)
+            self.corr_table.setRowCount(1)
+            self.corr_table.setHorizontalHeaderLabels(['提示'])
+            tip_item = QTableWidgetItem('尚未绑定任何文件/附件文件夹，无法预览对应关系。')
+            tip_item.setForeground(QColor('#c0c4cc'))
+            self.corr_table.setItem(0, 0, tip_item)
+            return
+
+        # 列头：序号/收件人 + 邮箱号 + 各标记位置 + 各附件文件夹
+        headers = ['第 k 条数据 / 收件人', '邮箱号']
+        for k in bound_keys:
+            headers.append(self._marker_names.get(k, k))
+        for idx in range(len(folders)):
+            headers.append('附件文件夹%d' % (idx + 1))
+        self.corr_table.setColumnCount(len(headers))
+        self.corr_table.setHorizontalHeaderLabels(headers)
+
+        # 读取每个已绑定标记文件的行数据
+        col_rows = []          # 每个绑定 key 对应的一组行字符串
+        max_row = 0
+        for k in bound_keys:
+            rows = self._readDataRows(self._load_map[k])
+            col_rows.append(rows)
+            max_row = max(max_row, len(rows))
+
+        # 扫描每个附件文件夹的文件名列表（仅当前层、按名排序）
+        folder_files = []      # 每个文件夹排序后的文件名列表
+        for folder in folders:
+            names = self._scanFolderFiles(folder)
+            folder_files.append(names)
+            max_row = max(max_row, len(names))
+
+        if max_row == 0:
+            self.corr_table.setRowCount(1)
+            tip_item = QTableWidgetItem('绑定文件/附件文件夹均为空，请检查。')
+            tip_item.setForeground(QColor('#c0c4cc'))
+            self.corr_table.setItem(0, 1, tip_item)
+            return
+
+        self.corr_table.setRowCount(max_row)
+        # 从收件人输入框解析第 k 个邮箱号（供“邮箱号”列展示，缺行留空）
+        email_list = parseEmails(self.to_edit.text()) if hasattr(self, 'to_edit') else []
+        for i in range(max_row):
+            col = 0
+            # 第 1 列：序号/收件人标签
+            idx_item = QTableWidgetItem('收件人 %d' % (i + 1))
+            idx_item.setForeground(QColor('#595f69'))
+            idx_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.corr_table.setItem(i, col, idx_item)
+            col += 1
+            # 第 2 列：对应邮箱号
+            email = email_list[i] if i < len(email_list) else ''
+            email_item = QTableWidgetItem(email)
+            email_item.setToolTip(email)
+            self.corr_table.setItem(i, col, email_item)
+            col += 1
+            # 各标记该行数据
+            for rows in col_rows:
+                val = rows[i] if i < len(rows) else ''
+                cell = QTableWidgetItem(val)
+                cell.setToolTip(val)
+                self.corr_table.setItem(i, col, cell)
+                col += 1
+            # 各附件文件夹：第 k 个文件（仅当前层排序后），缺文件则留空
+            for names in folder_files:
+                fname = names[i] if i < len(names) else ''
+                file_cell = QTableWidgetItem(fname)
+                file_cell.setToolTip(fname)
+                self.corr_table.setItem(i, col, file_cell)
+                col += 1
+
+        # 表头与行高自适应
+        self.corr_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.corr_table.verticalHeader().setDefaultSectionSize(26)
+
+    def _readDataRows(self, path):
+        """读取数据文件全部有效行（文本行），供对应关系矩阵使用
+
+        自动过滤空白行 / 纯空格行等无意义内容，避免把多余空行误判为收件人。
+        CSV/TXT 按行读取；Excel 读取第一工作表每行以制表符连接各列。
+        参数：
+            path<str>：文件绝对路径
+        返回：
+            list<str>：所有有效数据行文本（首行表头也计入，作为第 1 条数据）
+        """
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext in ('.csv', '.txt'):
+                with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+                    # strip 后仍为空的整行视为无意义内容，直接跳过
+                    return [line.rstrip('\n\r') for line in fh if line.strip()]
+            elif ext in ('.xlsx', '.xls'):
+                import openpyxl
+                wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+                ws = wb.active
+                rows = []
+                for row_data in ws.iter_rows(values_only=True):
+                    joined = '\t'.join([str(c) if c is not None else '' for c in row_data])
+                    # 整行为空（所有单元格均为空字符串/None）时跳过
+                    if joined.strip():
+                        rows.append(joined)
+                wb.close()
+                return rows
+            else:
+                return []
+        except Exception:
+            return []
+
+    def _onDeleteBindingRow(self, key):
+        """绑定规则表中删除指定标记的绑定，并刷新预览与表格
+
+        参数：
+            key<str>：标记键
+        """
+        self._load_map.pop(key, None)
+        self._file_row_counts.pop(key, None)
+        # 如果删除的是当前选中的标记，清空预览
+        cur_key = self.mark_combo.currentData()
+        if cur_key == key:
+            self._clearPreview()
+        self._updateBindingTable()
+        self._updateProgress()
+
+    def _updateProgress(self):
+        """刷新配置进度标签：显示 已绑定数/总数 + 完成状态颜色"""
+        total = len(self._marker_keys)
+        bound = sum(1 for k in self._marker_keys if k in self._load_map and self._load_map[k])
+        if total == 0:
+            text = '未检测到标记'
+            obj = 'loadStatusPending'
+        elif bound == total:
+            text = '已配置 %d/%d  ✓ 全部就绪' % (bound, total)
+            obj = 'loadStatusOk'
+        else:
+            text = '已配置 %d/%d' % (bound, total)
+            obj = 'loadStatusPending'
+        self.load_progress_label.setText(text)
+        if self.load_progress_label.objectName() != obj:
+            self.load_progress_label.setObjectName(obj)
+            self.load_progress_label.style().unpolish(self.load_progress_label)
+            self.load_progress_label.style().polish(self.load_progress_label)
+        # 同步刷新「对应关系展望」矩阵（所有绑定修改点都会调用本方法）
+        self._updateCorrelationTable()
+
+    def _buildVariablePanel(self):
+        """构建右侧「变量标记」面板（配置页右侧常驻）
+
+        返回：
+            QWidget：变量面板；含蓝色「标记选中为变量」按钮、变量列表、清空按钮
+        """
+        panel = QWidget()
+        panel.setObjectName('varPanel')
+        right_panel = QVBoxLayout(panel)
+        right_panel.setContentsMargins(14, 12, 14, 12)
+        right_panel.setSpacing(8)
+
+        # 面板标题
+        head = QLabel('变量标记（Payload）')
+        head.setObjectName('varTitle')
+        right_panel.addWidget(head)
+        tip = QLabel('在主题/正文/昵称中选中文字 → 点下方按钮包裹为 $$变量$$（两个美元符包裹）')
+        tip.setObjectName('varHint')
+        tip.setWordWrap(True)
+        right_panel.addWidget(tip)
+
+        # 蓝色「标记选中为变量」按钮
+        mark_btn = QPushButton('标记选中为变量')
+        mark_btn.setToolTip('将主题/正文/昵称中选中的文字包裹为 $$变量$$\n'
+                            '（自动作用于当前聚焦或含选中文字的输入框）')
+        mark_btn.setObjectName('varMarkBtn')
+        mark_btn.setMinimumHeight(34)
+        mark_btn.clicked.connect(self._markVariableFromPanel)
+        right_panel.addWidget(mark_btn)
 
         # 变量列表
         self.variable_list = QListWidget()
+        self.variable_list.setObjectName('varList')
         right_panel.addWidget(self.variable_list, 1)
 
-        # 变量操作按钮
+        # 批量操作行：删除选中 / 清空所有
         var_btn_row = QHBoxLayout()
+        remove_btn = QPushButton('删除光标处')
+        remove_btn.clicked.connect(self._removeBodyVariable)
+        var_btn_row.addWidget(remove_btn)
         self.clear_all_btn = QPushButton('清空所有变量')
         self.clear_all_btn.clicked.connect(self._clearAllVariables)
         var_btn_row.addWidget(self.clear_all_btn)
         right_panel.addLayout(var_btn_row)
 
-        # 数据导入占位提示
-        right_panel.addWidget(QLabel(''))
-        self.data_hint_label = QLabel('📂 导入 Excel/CSV 数据文件')
-        self.data_hint_label.setStyleSheet('color:#666; padding:10px; background:#f5f7fa; border-radius:4px;')
+        # 说明提示
+        self.data_hint_label = QLabel('变量仅在发送时替换为对应负载数据；\n请确保每个变量都已配置负载。')
+        self.data_hint_label.setObjectName('varNote')
         self.data_hint_label.setWordWrap(True)
         right_panel.addWidget(self.data_hint_label)
 
-        # 右侧面板放入独立 widget，限制宽度，避免拉伸
-        right_widget = QWidget()
-        right_widget.setLayout(right_panel)
-        right_widget.setMaximumWidth(300)
-        root.addWidget(right_widget, 2)   # 右侧占 2 份
+        right_panel.addStretch()
+        return panel
 
-        # 主题输入变化时刷新变量列表（统一以 title_edit 为主题输入框）
-        self.title_edit.textChanged.connect(self._updateVariableList)
-        self._updateVariableList()
+    def _removeBodyVariable(self):
+        """删除正文中光标处的变量（右侧面板批量操作入口）"""
+        self._removeVariableAtCursor(self.body_editor)
+
+    def buildAttachmentConfig(self):
+        """构建附件配置区：支持「固定附件 / 不固定附件」双模式切换
+
+        返回：
+            QWidget：附件配置组件
+        """
+        frame = self._makeSection('附件', '固定=所有收件人相同；不固定=第 k 收件人取每个文件夹第 k 个文件', lambda: QWidget())
+
+        # 模式切换行
+        mode_row = QHBoxLayout()
+        self.attach_fixed_radio = QRadioButton('固定附件')
+        self.attach_fixed_radio.setChecked(True)
+        self.attach_variable_radio = QRadioButton('不固定附件')
+        mode_row.addWidget(self.attach_fixed_radio)
+        mode_row.addWidget(self.attach_variable_radio)
+        mode_row.addStretch()
+        # 放入同一互斥组，确保两个单选按钮只能二选一（圆圈不消失、状态互斥）
+        self.attach_mode_group = QButtonGroup(self)
+        self.attach_mode_group.addButton(self.attach_fixed_radio, 0)
+        self.attach_mode_group.addButton(self.attach_variable_radio, 1)
+        # 默认选中「固定」
+        self.attach_fixed_radio.setChecked(True)
+        mode_row_widget = QWidget()
+        mode_row_widget.setLayout(mode_row)
+        frame.layout().addWidget(mode_row_widget)
+
+        # 双模式内容堆叠
+        self.attach_stack = QStackedWidget()
+        frame.layout().addWidget(self.attach_stack)
+
+        # 固定模式：列表 + 计数 + 添加/删除按钮
+        fixed_page = QWidget()
+        fixed_lay = QVBoxLayout(fixed_page)
+        fixed_lay.setContentsMargins(0, 0, 0, 0)
+        fixed_head = QHBoxLayout()
+        fixed_head.addWidget(QLabel('全部收件人共用以下附件：'))
+        fixed_head.addStretch()
+        count_label = QLabel()
+        self.attachment_count_label = count_label
+        fixed_head.addWidget(count_label)
+        fixed_lay.addLayout(fixed_head)
+        self.attachment_list = QListWidget()
+        self.attachment_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.attachment_list.setMaximumHeight(60)   # 附件列表更矮，压缩附件区高度
+        fixed_lay.addWidget(self.attachment_list)
+        fixed_btn_row = QHBoxLayout()
+        add_fixed_btn = QPushButton('添加附件…')
+        add_fixed_btn.clicked.connect(self.onAddAttachment)
+        fixed_btn_row.addWidget(add_fixed_btn)
+        remove_fixed_btn = QPushButton('删除选中附件')
+        remove_fixed_btn.clicked.connect(self.onRemoveAttachment)
+        fixed_btn_row.addWidget(remove_fixed_btn)
+        fixed_btn_row.addStretch()
+        fixed_lay.addLayout(fixed_btn_row)
+
+        # 不固定模式：文件夹列表 + 说明（顺序提示黄字）
+        variable_page = QWidget()
+        variable_lay = QVBoxLayout(variable_page)
+        variable_lay.setContentsMargins(0, 0, 0, 0)
+        folder_tip = QLabel('⚠ 第 k 收件人取各文件夹第 k 个文件。请先在文件夹内按期望顺序排好文件，'
+                            '程序按读取顺序一一对应，后续可在负载页拖拽调整。')
+        folder_tip.setObjectName('yellowTip')
+        folder_tip.setWordWrap(True)
+        variable_lay.addWidget(folder_tip)
+        self.attach_folder_list = QListWidget()
+        self.attach_folder_list.setMaximumHeight(60)   # 与固定模式对齐，压缩附件区高度
+        variable_lay.addWidget(self.attach_folder_list)
+        folder_btn_row = QHBoxLayout()
+        add_folder_btn = QPushButton('添加文件夹…')
+        add_folder_btn.clicked.connect(self.onAddFolder)
+        folder_btn_row.addWidget(add_folder_btn)
+        folder_btn_row.addStretch()
+        variable_lay.addLayout(folder_btn_row)
+
+        self.attach_stack.addWidget(fixed_page)
+        self.attach_stack.addWidget(variable_page)
+
+        # 模式切换联动：固定=index0，不固定=index1
+        self.attach_fixed_radio.toggled.connect(
+            lambda checked: self.attach_stack.setCurrentIndex(0 if checked else 1))
+        return frame
+
+    def onAddFolder(self):
+        """「不固定附件」添加文件夹：弹出目录选择，将路径加入文件夹列表并保存
+
+        后续负载配给页可读取 self.attach_folders 用于第 k 收件人与每文件夹第 k 个文件的对应。
+        """
+        folder = QFileDialog.getExistingDirectory(self, '选择附件文件夹（第 k 收件人取其中第 k 个文件）')
+        if not folder:
+            return
+        # 保存选中的文件夹路径，供第2步负载配给页使用
+        if not hasattr(self, 'attach_folders'):
+            self.attach_folders = []
+        self.attach_folders.append(folder)
+        self.attach_folder_list.addItem(folder)
 
     # ---------------- 变量标记逻辑 ----------------
 
+    def _markVariableFromPanel(self):
+        """从右侧面板统一触发变量标记：自动判定目标输入框（主题或正文）
+
+        优先级：含选中文字者 > 当前获焦的输入框 > 默认正文编辑器。
+        点击按钮会造成焦点转移，故依据「选中文字」而非焦点来判断更可靠。
+        """
+        target = self._targetVariableWidget()
+        if target is not None:
+            self._markSelectionAsVariable(target)
+
+    def _targetVariableWidget(self):
+        """返回本次应作用的目标输入框（QLineEdit=主题/昵称，QTextEdit=正文）
+
+        核心修复：QLineEdit 失焦时选中状态会被清除，故通过 _last_selected_widget 记录最后一次
+        （selectionChanged 信号触发时）有选中内容的控件，避免点击按钮转移焦点后误判。
+
+        返回：
+            widget: 目标输入控件；无合适目标时返回 self.body_editor
+        """
+        # 1. 优先选取含选中文字的输入框（理论上点击按钮瞬间已失效，但先尝试）
+        for w in (self.title_edit, self.body_editor,
+                  getattr(self, 'nickname_edit', None)):
+            if w is None or not hasattr(w, 'selectedText'):
+                continue
+            if isinstance(w, QLineEdit):
+                if w.selectedText():
+                    return w
+            elif w.textCursor().hasSelection():
+                return w
+
+        # 2. 关键修复：检查上一次触发 selectionChanged 的控件（记录了失焦前的选中状态）
+        if hasattr(self, '_last_selected_widget') and self._last_selected_widget is not None:
+            w = self._last_selected_widget
+            if isinstance(w, QLineEdit):
+                # 虽然失焦清空了 selectedText，但我们知道它刚才被选中过
+                # 此时我们需要通过它的 text() 和一个内部记录的选区来判断，但更简单的是：
+                # 如果是 QLineEdit 且它是最后一个选中的，我们就认为它是目标
+                return w
+            elif isinstance(w, QTextEdit):
+                # 对于 QTextEdit，失焦后 hasSelection() 仍可能为 True（PyQt 行为）
+                # 但如果为 False，我们也通过 _last_selected_widget 来认定它
+                return w
+
+        # 3. 其次取当前获焦的输入框
+        focused = self.focusWidget()
+        if focused in (self.title_edit, self.body_editor,
+                       getattr(self, 'nickname_edit', None)):
+            return focused
+            
+        # 4. 最终 fallback
+        return self.body_editor
+
+    def _onSelectionChanged(self):
+        """槽函数：当任一文本框有选中内容时，记录该控件及选区信息。
+
+        只在「确有选中文本」时更新记录。QLineEdit 失焦会自动清空选中并再次触发本信号，
+        若不做判断会把已记录的文字覆盖为空，导致误插入 $变量名$ 占位符。
+        """
+        sender = self.sender()
+        if sender in (self.title_edit, self.body_editor,
+                      getattr(self, 'nickname_edit', None)):
+            if isinstance(sender, QLineEdit):
+                # 仅当确有选中文字时才记录（失焦清空的信号不覆盖）
+                if not sender.selectedText():
+                    return
+                self._last_selected_widget = sender
+                self._last_selection_start = sender.selectionStart()
+                self._last_selection_length = sender.selectionLength()
+                self._last_selected_text = sender.selectedText()
+            elif isinstance(sender, QTextEdit):
+                # 仅当确有选中文字时才记录
+                cursor = sender.textCursor()
+                if not cursor.hasSelection():
+                    return
+                self._last_selected_widget = sender
+                self._last_selected_text = cursor.selectedText()
+                self._last_selection_start = cursor.selectionStart()
+                self._last_selection_length = cursor.selectionEnd() - cursor.selectionStart()
+
     def _markSelectionAsVariable(self, widget):
-        """将输入框/编辑器中的选中文字包裹为 {{变量名}}
+        """将输入框/编辑器中的选中文字包裹为 $变量名$ 并设置背景高亮（类似 Burp Suite 风格）
 
         参数：
             widget<QLineEdit|QTextEdit>：目标输入控件
         """
         if isinstance(widget, QLineEdit):
+            # 核心修复：如果 QLineEdit 失焦导致 selectedText() 返回空，
+            # 则使用 _onSelectionChanged 中记录的精确选区信息
             selected = widget.selectedText()
+            if not selected and hasattr(self, '_last_selected_widget') and self._last_selected_widget is widget:
+                selected = getattr(self, '_last_selected_text', '')
+                # 获取记录的精确位置
+                start = getattr(self, '_last_selection_start', -1)
+                length = getattr(self, '_last_selection_length', 0)
+            else:
+                start = widget.selectionStart()
+                length = len(selected)
+
             if not selected:
                 # 未选中文字时，在光标处插入空变量占位
                 pos = widget.cursorPosition()
                 text = widget.text()
-                new_text = text[:pos] + '{{变量名}}' + text[pos:]
+                new_text = text[:pos] + '$$变量名$$' + text[pos:]
                 widget.setText(new_text)
-                widget.setCursorPosition(pos + 2)  # 光标移到 {{后
+                widget.setCursorPosition(pos + 2)  # 光标移到第1对 $$ 后
             else:
                 text = widget.text()
-                selected_start = text.find(selected)
-                selected_end = selected_start + len(selected)
-                new_text = text[:selected_start] + '{{' + selected + '}}' + text[selected_end:]
+                # 如果 start 无效（例如 -1），则回退到查找
+                if start < 0 or length <= 0:
+                    start = text.find(selected)
+                    if start == -1:
+                        start = widget.cursorPosition() - len(selected)
+                        if start < 0:
+                            start = 0
+                end = start + length
+                new_text = text[:start] + '$$' + selected + '$$' + text[end:]
                 widget.setText(new_text)
         elif isinstance(widget, QTextEdit):
             cursor = widget.textCursor()
+            # 变量仅用 $$...$$ 符号标记，不再修改文字背景颜色，
+            # 避免富文本背景色残存到预览生成的邮件正文中
+
+            # 关键修复：点击按钮导致 QTextEdit 失焦后 hasSelection() 返回 False，
+            # 此时用 _onSelectionChanged 中记录的选区委据恢复选区，再执行包裹逻辑
+            if not cursor.hasSelection() and hasattr(self, '_last_selected_widget') and self._last_selected_widget is widget:
+                start = getattr(self, '_last_selection_start', -1)
+                length = getattr(self, '_last_selection_length', 0)
+                if start >= 0 and length > 0:
+                    cursor.setPosition(start)
+                    cursor.setPosition(start + length, QTextCursor.MoveMode.KeepAnchor)
+                    widget.setTextCursor(cursor)  # 恢复编辑器上的选区，保证 hasSelection() 为真
+
             if not cursor.hasSelection():
-                cursor.insertText('{{变量名}}')
+                # 无选中内容时：插入 $$变量名$$
+                cursor.insertText('$$变量名$$')
             else:
+                # 有选中内容时：包裹 $$...$$（不修改背景，仅插入符号）
                 selected = cursor.selectedText()
                 cursor.beginEditBlock()
                 cursor.removeSelectedText()
-                cursor.insertText('{{' + selected + '}}')
+                cursor.insertText('$$')
+                cursor.insertText(selected)
+                cursor.insertText('$$')
                 cursor.endEditBlock()
         self._updateVariableList()
 
     def _removeVariableAtCursor(self, widget):
-        """删除光标所在位置的 {{变量名}} 标记
+        """删除光标所在位置的 $变量名$ 标记，并清除高亮背景
 
         参数：
             widget<QLineEdit|QTextEdit>：目标输入控件
@@ -2888,7 +5516,7 @@ class AdvancedPage(NormalPage):
         if isinstance(widget, QLineEdit):
             pos = widget.cursorPosition()
             text = widget.text()
-            # 查找光标附近的 {{...}}
+            # 查找光标附近的 $...$
             match = self._findVariableAround(text, pos)
             if match:
                 start, end = match.span()
@@ -2903,11 +5531,14 @@ class AdvancedPage(NormalPage):
                 start, end = match.span()
                 cursor.setPosition(start)
                 cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-                cursor.removeSelectedText()
+                # 清除选中区域的文本和格式
+                default_fmt = QTextCharFormat()
+                cursor.setCharFormat(default_fmt)  # 先清除格式
+                cursor.removeSelectedText()         # 再删除文本
         self._updateVariableList()
 
     def _findVariableAround(self, text, pos):
-        """查找指定位置附近的 {{...}} 匹配
+        """查找指定位置附近的 $...$ 匹配
 
         参数：
             text<str>：完整文本
@@ -2923,28 +5554,336 @@ class AdvancedPage(NormalPage):
         return None
 
     def _clearAllVariables(self):
-        """清空主题和正文中的所有 {{...}} 标记（保留变量名本身）"""
+        """清空主题/正文/昵称中的所有 $...$ 标记（保留变量名本身）"""
+        # 正文先清除全部字符格式（含荧光笔背景/前景色），避免清空后黄色背景残存
+        body_cur = self.body_editor.textCursor()
+        body_cur.select(QTextCursor.SelectionType.Document)
+        body_cur.setCharFormat(QTextCharFormat())   # 清空全文格式
+        self.body_editor.setTextCursor(body_cur)
         # 主题输入框为 title_edit（来自 NormalPage.buildTitleRow）
         self.title_edit.setText(self.VARIABLE_PATTERN.sub(lambda m: m.group(1), self.title_edit.text()))
         self.body_editor.setPlainText(self.VARIABLE_PATTERN.sub(lambda m: m.group(1), self.body_editor.toPlainText()))
+        # 昵称输入框（存在时一并清理）
+        if hasattr(self, 'nickname_edit') and self.nickname_edit.text():
+            self.nickname_edit.setText(
+                self.VARIABLE_PATTERN.sub(lambda m: m.group(1), self.nickname_edit.text()))
         self._updateVariableList()
 
     def _updateVariableList(self):
-        """解析主题和正文中的所有 {{}} 并更新右侧变量列表"""
+        """解析主题/正文/昵称中的所有 $变量$ 并更新右侧变量列表
+
+        不去重：同一变量名在多个位置（或同一位置多处）标记都会各占一条，
+        并用「来源」前缀予以区分，方便后续负载配置按位置一一对应。
+        """
         self.variable_list.clear()
-        all_variables = set()
+        # 依次收集各来源的变量；每个匹配逐条入列，不做名称去重
+        self._collectVariables(self.title_edit.text(), '主题')
+        self._collectVariables(self.body_editor.toPlainText(), '正文')
+        if hasattr(self, 'nickname_edit'):
+            self._collectVariables(self.nickname_edit.text(), '昵称')
+        # 触发主题/昵称重绘，使 MarkableLineEdit 的变量段局部高亮实时更新
+        self.title_edit.update()
+        if hasattr(self, 'nickname_edit'):
+            self.nickname_edit.update()
 
-        # 从主题提取（主题输入框为 title_edit）
-        for match in self.VARIABLE_PATTERN.finditer(self.title_edit.text()):
-            all_variables.add(match.group(1))
+    def _collectVariables(self, text, source):
+        """将该来源文本中每个变量匹配逐条加入右侧变量列表（不去重）
 
-        # 从正文提取
-        for match in self.VARIABLE_PATTERN.finditer(self.body_editor.toPlainText()):
-            all_variables.add(match.group(1))
-
-        # 填充列表
-        for var in sorted(all_variables):
-            item = QListWidgetItem('{{' + var + '}}')
+        参数：
+            text<str>：某输入框当前文本
+            source<str>：来源标识（昵称/主题/正文），用于区分同名变量所处位置
+        """
+        for match in self.VARIABLE_PATTERN.finditer(text):
+            var = match.group(1)
+            item = QListWidgetItem('%s: $$%s$$' % (source, var))
             self.variable_list.addItem(item)
 
     # clearForm / setWriteMode / rememberRecordId 等沿用 NormalPage 的实现
+
+
+class PreviewMailDialog(QDialog):
+    """邮件预览查看/编辑对话框（像真正邮件一样呈现）
+
+    默认只读查看一封完整的邮件：顶部邮件头（发件人/收件人/主题/附件摘要），
+    正文用 QTextBrowser 渲染 HTML（含内嵌图），附件以列表展示。
+    点「编辑」切换到可编辑表单，改完「保存」写回源邮件 dict（仅预览批次）；
+    「退出编辑」时若有改动未保存则弹窗提醒。
+    """
+
+    def __init__(self, parent, mail):
+        """构建详情对话框
+
+        参数：
+            parent<AdvancedPage>：父窗体（用于回调写回 mail 与获取发件人信息）
+            mail<dict>：待查看/编辑的邮件数据（含 email/title/nickname/html/attachments）
+        """
+        super().__init__(parent)
+        self._parent = parent
+        self._mail = mail
+        self._editing = False            # 当前是否处于可编辑状态
+        self._dirty = False              # 是否有未保存的改动
+        self.setWindowTitle('邮件预览 - 收件人 %s' % (mail.get('email') or '未知'))
+        self.resize(760, 600)
+        self._buildUi(mail)
+        self._setEditing(False)          # 初始为只读邮件视图
+
+    # ---- 发件人信息 ----
+    def _senderHeader(self):
+        """构造发件人展示信息：(昵称, 邮箱)
+
+        发件人昵称优先取本封邮件配置页的发件人昵称（nickname，已做变量替换）；
+        未配置（空）时回退到底部 from_edit，仍为空才用默认占位名。
+        """
+        sender_name = (self._mail.get('nickname') or '').strip()
+        if not sender_name:
+            sender_name = (self._parent.from_edit.text().strip()
+                           if self._parent and hasattr(self._parent, 'from_edit')
+                           else '')
+        if not sender_name:
+            sender_name = DEFAULT_FROM_NAME
+        return sender_name, SMTP_USERNAME
+
+    # ---- 只读视图：像真正邮件那样呈现 ----
+    def _buildReadView(self):
+        """构建只读邮件视图：头部区 + HTML 正文 + 附件列表"""
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+
+        # 邮件头：发件人 / 收件人
+        sender_name, sender_email = self._senderHeader()
+        self.read_from_label = QLabel('发件人：%s <%s>'
+                                      % (sender_name, sender_email))
+        self.read_to_label = QLabel('收件人：%s' % (self._mail.get('email') or ''))
+        for lab in (self.read_from_label, self.read_to_label):
+            lab.setStyleSheet('color:#374151;')
+        v.addWidget(self.read_from_label)
+        v.addWidget(self.read_to_label)
+
+        # 主题（更大字号，分隔线）
+        self.read_title_label = QLabel(self._mail.get('title') or '(无主题)')
+        self.read_title_label.setStyleSheet(
+            'font-size:15px;font-weight:600;color:#111;padding:6px 2px 8px 2px;'
+            'border-bottom:1px solid #e5e7eb;')
+        self.read_title_label.setWordWrap(True)
+        v.addWidget(self.read_title_label)
+
+        # 正文：HTML 富文本渲染（如同打开真实邮件）
+        self.read_browser = QTextBrowser()
+        self.read_browser.setOpenExternalLinks(True)
+        self._renderHtml()
+        v.addWidget(self.read_browser, 1)
+
+        # 附件：列表展示文件名
+        self.read_attach_label = QLabel()
+        self.read_attach_label.setStyleSheet('color:#374151;')
+        self.read_attach_label.setWordWrap(True)
+        v.addWidget(self.read_attach_label)
+        self._refreshAttachLabel()
+        return page
+
+    def _refreshAttachLabel(self):
+        """刷新只读视图附件的显示（每行一个附件文件名）"""
+        attach_list = self._mail.get('attachments') or []
+        if not attach_list:
+            self.read_attach_label.setText('')
+            return
+        names = [os.path.basename(p) if p else p for p in attach_list]
+        self.read_attach_label.setText(
+            '附件（%d）：%s' % (len(names), '  '.join(names)))
+
+    def _renderHtml(self):
+        """把邮件 HTML 渲染进正文浏览器，并注册内嵌图片资源使 cid 图片显示"""
+        # 注册内嵌图：cid:文件名 -> 实际图片路径（来自配置页 inline_image_paths）
+        # 资源 key 须带 cid: 前缀（与编辑器插入图片时的注册方式一致），否则图片无法显示
+        doc = self.read_browser.document()
+        inline = getattr(self._parent, 'inline_image_paths', None) or {}
+        for cid, path in inline.items():
+            if os.path.isfile(path):
+                doc.addResource(
+                    QTextDocument.ResourceType.ImageResource,
+                    QUrl('cid:' + cid), QImage(path))
+        self.read_browser.setHtml(self._mail.get('html') or '')
+
+    # ---- 编辑视图：可编辑表单 ----
+    def _buildEditView(self):
+        """构建可编辑视图：收件人/主题/昵称/正文表单 + 附件只读展示"""
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+
+        info_form = QFormLayout()
+        self.email_edit = QLineEdit(self._mail.get('email') or '')
+        self.title_edit = QLineEdit(self._mail.get('title') or '')
+        self.nick_edit = QLineEdit(self._mail.get('nickname') or '')
+        # 任一字段被修改即标记未保存改动（供退出/关闭时提醒）
+        self.email_edit.textChanged.connect(self._onContentChanged)
+        self.title_edit.textChanged.connect(self._onContentChanged)
+        self.nick_edit.textChanged.connect(self._onContentChanged)
+        # 附件编辑：列表 + 选择/移除按钮（保存时写回该封邮件）
+        attach_box = QWidget()
+        att_lay = QHBoxLayout(attach_box)
+        att_lay.setContentsMargins(0, 0, 0, 0)
+        self.attach_list = QListWidget()
+        self.attach_list.setMaximumHeight(96)
+        # 全路径列表与界面列表一一对应（界面只显示文件名）
+        self._edit_attachments = list(self._mail.get('attachments') or [])
+        self._reloadAttachList()
+        att_lay.addWidget(self.attach_list, 1)
+        btn_col = QVBoxLayout()
+        pick_btn = QPushButton('选择附件…')
+        pick_btn.clicked.connect(self._onPickAttachments)
+        btn_col.addWidget(pick_btn)
+        remove_btn = QPushButton('移除选中')
+        remove_btn.clicked.connect(self._onRemoveAttachment)
+        btn_col.addWidget(remove_btn)
+        btn_col.addStretch()
+        att_lay.addLayout(btn_col)
+        info_form.addRow('附件：', attach_box)
+        lay.addLayout(info_form)
+
+        # 正文（HTML 富文本）
+        self.body_editor = QTextEdit()
+        self.body_editor.setAcceptRichText(True)
+        self.body_editor.setHtml(self._mail.get('html') or '')
+        self.body_editor.setMinimumHeight(320)
+        self.body_editor.textChanged.connect(self._onContentChanged)
+        lay.addWidget(self.body_editor, 1)
+        return page
+
+    def _buildUi(self, mail):
+        """构建对话框 UI：只读邮件视图 + 可编辑视图（QStackedWidget 切换）+ 底部按钮"""
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+        lay.setContentsMargins(12, 10, 12, 10)
+
+        # 主区：只读视图(0) / 编辑视图(1)，切换即切换查看/编辑
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(self._buildReadView())
+        self.view_stack.addWidget(self._buildEditView())
+        lay.addWidget(self.view_stack, 1)
+
+        # ---- 底部按钮 ----
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self.edit_toggle_btn = QPushButton('编辑')
+        self.edit_toggle_btn.setObjectName('loadPrimaryBtn')
+        self.edit_toggle_btn.clicked.connect(self._onToggleEdit)
+        btn_row.addWidget(self.edit_toggle_btn)
+        self.save_btn = QPushButton('保存')
+        self.save_btn.setObjectName('loadPrimaryBtn')
+        self.save_btn.clicked.connect(self._onSave)
+        btn_row.addWidget(self.save_btn)
+        self.exit_edit_btn = QPushButton('退出编辑')
+        self.exit_edit_btn.setObjectName('loadActionBtn')
+        self.exit_edit_btn.clicked.connect(self._onExitEdit)
+        btn_row.addWidget(self.exit_edit_btn)
+        self.close_btn = QPushButton('关闭')
+        self.close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self.close_btn)
+        lay.addLayout(btn_row)
+
+    def _setEditing(self, editing):
+        """切换查看/编辑状态：只读时展示真实邮件视图，编辑时切换到表单"""
+        self._editing = editing
+        # 切换视图显示
+        self.view_stack.setCurrentIndex(1 if editing else 0)
+        # 编辑/退出编辑 按钮状态切换（保存始终可用）
+        self.edit_toggle_btn.setVisible(not editing)
+        self.exit_edit_btn.setVisible(editing)
+
+    def _onContentChanged(self):
+        """任一编辑字段内容变化时，标记存在未保存改动"""
+        # 仅当处于编辑态时记录脏标记（只读态不会触发 textChanged 修改内容）
+        if self._editing:
+            self._dirty = True
+
+    def _onToggleEdit(self):
+        """点「编辑」：进入可编辑状态"""
+        self._setEditing(True)
+
+    def _onExitEdit(self):
+        """点「退出编辑」：若已有未保存改动则弹窗提醒，否则直接退出编辑态"""
+        if self._dirty:
+            # 提醒保存：让用户选择 保存并退出 / 放弃更改 / 取消
+            choice = QMessageBox.warning(
+                self, '未保存的更改',
+                '有未保存的修改，退出编辑后这些更改将丢失。\n是否先保存？',
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel)
+            if choice == QMessageBox.StandardButton.Save:
+                self._onSave()
+            elif choice == QMessageBox.StandardButton.Cancel:
+                return        # 留在编辑态
+            # Discard：放弃更改（不清除已编辑内容，但退出编辑态；已编辑内容不回写）
+        self._dirty = False
+        self._setEditing(False)
+
+    def _reloadAttachList(self):
+        """按当前全路径列表刷新附件编辑列表（只显示文件名）"""
+        self.attach_list.clear()
+        for p in self._edit_attachments:
+            self.attach_list.addItem(os.path.basename(p) if p else p)
+
+    def _onPickAttachments(self):
+        """点「选择附件…」：弹选择框，把选中的附件加入本封邮件，并标记未保存"""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, '选择附件', '', '所有文件 (*.*)')
+        if not paths:
+            return
+        # 避免重复加入同一路径
+        existing = set(self._edit_attachments)
+        for p in paths:
+            if p not in existing:
+                self._edit_attachments.append(p)
+                existing.add(p)
+        self._reloadAttachList()
+        self._onContentChanged()
+
+    def _onRemoveAttachment(self):
+        """点「移除选中」：从本封邮件移除选中的附件并标记未保存"""
+        row = self.attach_list.currentRow()
+        if row < 0:
+            return
+        del self._edit_attachments[row]
+        self._reloadAttachList()
+        self._onContentChanged()
+
+    def _onSave(self):
+        """保存当前编辑内容：写回源邮件 dict（仅预览批次，不回写负载文件）"""
+        self._mail['email'] = self.email_edit.text().strip()
+        self._mail['title'] = self.title_edit.text().strip()
+        self._mail['nickname'] = self.nick_edit.text().strip()
+        self._mail['html'] = self.body_editor.toHtml()
+        # 附件：写回编辑后的附件全路径列表
+        self._mail['attachments'] = list(self._edit_attachments)
+        self._dirty = False
+        # 更新只读视图内容并回到只读视图，体现「正式邮件预览」
+        self.read_from_label.setText('发件人：%s <%s>' % self._senderHeader())
+        self.read_to_label.setText('收件人：%s' % (self._mail.get('email') or ''))
+        self.read_title_label.setText(self._mail.get('title') or '(无主题)')
+        self._renderHtml()
+        self._refreshAttachLabel()
+        self._setEditing(False)
+        # 写回预览批次后，刷新列表对应行的摘要
+        self._parent._refreshPreviewRowFor(self._mail)
+        QMessageBox.information(self, '已保存', '已保存到本次预览批次。')
+
+    def closeEvent(self, event):
+        """点右上角关闭/「关闭」：若有未保存改动则提醒"""
+        if self._dirty:
+            choice = QMessageBox.warning(
+                self, '未保存的更改',
+                '有未保存的修改，关闭后将丢失。\n是否先保存？',
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel)
+            if choice == QMessageBox.StandardButton.Save:
+                self._onSave()
+            elif choice == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+        event.accept()
