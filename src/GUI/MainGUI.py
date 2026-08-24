@@ -336,7 +336,8 @@ class MainWindow(QMainWindow):
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
-        body.addWidget(self.buildLeftPane(), 0)   # 左栏：固定宽
+        self.left_pane = self.buildLeftPane()
+        body.addWidget(self.left_pane, 0)   # 左栏：固定宽
         # 右栏堆叠容器（4 页：列表主页、模式选择页、普通发信页、高级模式占位页）
         self.stack = QStackedWidget()
         body.addWidget(self.stack, 1)             # 右栏：占剩余空间
@@ -606,6 +607,8 @@ class MainWindow(QMainWindow):
         返回时自动刷新当前菜单的列表数据，确保发送成功/存草稿等页面操作
         的改动立即可见，无需用户重新进入该分类。
         """
+        # 恢复显示左侧菜单栏（从高级模式返回时）
+        self.left_pane.setVisible(True)
         # 回到列表前先从数据库重读当前分类的数据（发送/存草稿后内容已变化）
         self._refreshListPageFor(self._current_menu_id)
         self.stack.setCurrentWidget(self.list_page)
@@ -616,6 +619,8 @@ class MainWindow(QMainWindow):
 
     def showNormalPage(self):
         """选择模式 → 普通模式发信页（新建写信：重置为空白的写信状态）"""
+        # 恢复显示左侧菜单栏（从高级模式切换时）
+        self.left_pane.setVisible(True)
         # 新写信：先清空上次编辑残留（主题/正文/收件人等），再进入写信模式
         self.normal_page.clearForm()
         self.normal_page.setWriteMode()
@@ -624,7 +629,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.normal_page)
 
     def showHighModePlaceholder(self):
-        """选择模式 → 高级模式占位页（开发中）"""
+        """选择模式 → 高级模式页面，隐藏左侧菜单栏以获得更大编辑空间"""
+        self.left_pane.setVisible(False)
         self.stack.setCurrentWidget(self.high_page)
 
 
