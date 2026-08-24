@@ -717,247 +717,6 @@ class HighModePlaceholderPage(QWidget):
         row.addWidget(btn); row.addStretch(); v.addLayout(row); v.addStretch()
 
 
-class AdvancedPage(NormalPage):
-    """高级模式发信页：在普通模式基础上增加变量标记（Payload Positions）功能
-
-    继承 NormalPage，复用所有普通模式功能：
-      - 抄送/密送、富文本编辑、附件、收件人选择等
-      - 发送、存草稿、预览等操作
-
-    新增高级模式特有功能：
-      - 在主题/正文中标记变量 {{变量名}}
-      - 右侧变量管理面板
-      - 数据导入占位（后续对接 Excel/CSV）
-    """
-
-    # 变量包裹正则：匹配 {{...}} 格式
-    VARIABLE_PATTERN = re.compile(r'\{\{(.*?)\}\}')
-
-    def __init__(self, db, on_back):
-        """初始化高级模式页面
-
-        参数：
-            db<MailDatabase>：数据库引用
-            on_back<callable>：返回列表页的回调
-        """
-        super().__init__(db, on_back)
-        # 覆盖构建高级模式 UI
-        self._buildAdvancedUi()
-
-    def _buildAdvancedUi(self):
-        """在普通模式 UI 基础上添加高级模式特有功能
-
-        由于已调用 NormalPage.buildUi()，此处只需添加：
-          1. 主题编辑器的变量标记按钮
-          2. 正文编辑器的变量标记按钮
-          3. 右侧变量管理面板（通过布局调整实现）
-        """
-        # 1. 为主题编辑器添加变量标记功能
-        self._enhanceSubjectEditor()
-
-        # 2. 为正文编辑器添加变量标记功能
-        self._enhanceBodyEditor()
-
-        # 3. 在顶部操作栏添加数据导入按钮（UI 占位）
-        self._addDataImportButton()
-
-    def _enhanceSubjectEditor(self):
-        """为主题编辑器添加变量标记按钮"""
-        # 主题标记按钮
-        self.subject_mark_btn = QPushButton('标记变量')
-        self.subject_mark_btn.setToolTip('将选中文字标记为变量')
-        self.subject_mark_btn.setStyleSheet(
-            'QPushButton{background:#fff3cd;color:#856404;'
-            'border:1px solid #ffc107;padding:3px 8px;border-radius:3px;}'
-            'QPushButton:hover{background:#ffe69c;}'
-        )
-        self.subject_mark_btn.clicked.connect(
-            lambda: self._markSelectionAsVariable(self.title_edit)
-        )
-
-        # 将按钮插入到主题行
-        # title_edit 在 buildTitleRow() 中创建，其父 widget 包含主题行布局
-        parent = self.title_edit.parent()
-        if parent and parent.layout():
-            layout = parent.layout()
-            layout.addWidget(self.subject_mark_btn)
-
-        # 连接文本变化信号以更新变量列表
-        self.title_edit.textChanged.connect(self._updateVariableList)
-
-    def _enhanceBodyEditor(self):
-        """为正文编辑器添加变量标记功能（在正文下方添加按钮行）"""
-        # 创建按钮行
-        self.body_btn_row = QHBoxLayout()
-
-        # 标记选中变量按钮
-        self.body_mark_btn = QPushButton('标记选中为变量')
-        self.body_mark_btn.setToolTip('将正文中选中的文字包裹为 {{变量名}}')
-        self.body_mark_btn.setStyleSheet(
-            'QPushButton{background:#fff3cd;color:#856404;'
-            'border:1px solid #ffc107;padding:4px 12px;border-radius:3px;}'
-            'QPushButton:hover{background:#ffe69c;}'
-        )
-        self.body_mark_btn.clicked.connect(
-            lambda: self._markSelectionAsVariable(self.body_editor)
-        )
-        self.body_btn_row.addWidget(self.body_mark_btn)
-
-        # 删除选中变量按钮
-        self.body_remove_btn = QPushButton('删除选中变量')
-        self.body_remove_btn.setToolTip('删除光标所在位置的 {{变量名}}')
-        self.body_remove_btn.setStyleSheet(
-            'QPushButton{background:#f8d7da;color:#721c24;'
-            'border:1px solid #f5c6cb;padding:4px 12px;border-radius:3px;}'
-            'QPushButton:hover{background:#f1b0b5;}'
-        )
-        self.body_remove_btn.clicked.connect(
-            lambda: self._removeVariableAtCursor(self.body_editor)
-        )
-        self.body_btn_row.addWidget(self.body_remove_btn)
-
-        self.body_btn_row.addStretch()
-
-        # 将按钮行插入到正文编辑器下方
-        main_layout = self.layout()
-        if main_layout:
-            # 找到 body_editor 在布局中的位置，在其后插入按钮行
-            insert_idx = -1
-            for i in range(main_layout.count()):
-                item = main_layout.itemAt(i)
-                if item and item.widget() == self.body_editor:
-                    insert_idx = i + 1
-                    break
-
-            if insert_idx > 0:
-                main_layout.insertLayout(insert_idx, self.body_btn_row)
-            else:
-                main_layout.addLayout(self.body_btn_row)
-
-        # 连接文本变化信号
-        self.body_editor.textChanged.connect(self._updateVariableList)
-
-    def _addDataImportButton(self):
-        """在顶部操作栏添加数据导入按钮（UI 占位）"""
-        # 数据导入按钮
-        self.import_data_btn = QToolButton()
-        self.import_data_btn.setText('📂 导入数据')
-        self.import_data_btn.setToolTip('导入 Excel/CSV 数据文件（功能待实现）')
-        self.import_data_btn.setMinimumHeight(34)
-        self.import_data_btn.setStyleSheet(
-            'QToolButton{background:#28a745;color:#fff;'
-            'border:0;padding:4px 12px;border-radius:4px;}'
-            'QToolButton:hover{background:#1e7e34;}'
-        )
-        self.import_data_btn.clicked.connect(self._onImportData)
-
-        # 将按钮添加到顶部操作栏
-        self.send_btn.parentWidget()
-        top_bar = self.send_btn.parentWidget()
-        if top_bar and top_bar.layout():
-            layout = top_bar.layout()
-            # 在发送按钮之前插入
-            layout.insertWidget(layout.indexOf(self.send_btn), self.import_data_btn)
-
-    # ---------------- 变量标记逻辑 ----------------
-
-    def _markSelectionAsVariable(self, widget):
-        """将输入框/编辑器中的选中文字包裹为 {{变量名}}
-
-        参数：
-            widget<QLineEdit|QTextEdit>：目标输入控件
-        """
-        if isinstance(widget, QLineEdit):
-            selected = widget.selectedText()
-            if not selected:
-                # 未选中文字时，在光标处插入一个空变量占位
-                pos = widget.cursorPosition()
-                text = widget.text()
-                new_text = text[:pos] + '{{变量名}}' + text[pos:]
-                widget.setText(new_text)
-                widget.setCursorPosition(pos + 2)
-            else:
-                text = widget.text()
-                selected_start = text.find(selected)
-                selected_end = selected_start + len(selected)
-                new_text = text[:selected_start] + '{{' + selected + '}}' + text[selected_end:]
-                widget.setText(new_text)
-        elif isinstance(widget, QTextEdit):
-            cursor = widget.textCursor()
-            if not cursor.hasSelection():
-                # 未选中文字时，在光标处插入空变量占位
-                cursor.insertText('{{变量名}}')
-            else:
-                selected = cursor.selectedText()
-                cursor.beginEditBlock()
-                cursor.removeSelectedText()
-                cursor.insertText('{{' + selected + '}}')
-                cursor.endEditBlock()
-        self._updateVariableList()
-
-    def _removeVariableAtCursor(self, widget):
-        """删除光标所在位置的 {{变量名}} 标记
-
-        参数：
-            widget<QLineEdit|QTextEdit>：目标输入控件
-        """
-        if isinstance(widget, QLineEdit):
-            pos = widget.cursorPosition()
-            text = widget.text()
-            # 查找光标附近的 {{...}}
-            match = self._findVariableAround(text, pos)
-            if match:
-                start, end = match.span()
-                new_text = text[:start] + text[end:]
-                widget.setText(new_text)
-        elif isinstance(widget, QTextEdit):
-            cursor = widget.textCursor()
-            pos = cursor.position()
-            text = widget.toPlainText()
-            match = self._findVariableAround(text, pos)
-            if match:
-                start, end = match.span()
-                cursor.setPosition(start)
-                cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-                cursor.removeSelectedText()
-        self._updateVariableList()
-
-    def _findVariableAround(self, text, pos):
-        """查找指定位置附近的 {{...}} 匹配
-
-        参数：
-            text<str>：完整文本
-            pos<int>：光标位置
-
-        返回：
-            re.Match|None：匹配对象或 None
-        """
-        for match in self.VARIABLE_PATTERN.finditer(text):
-            start, end = match.span()
-            if start <= pos <= end:
-                return match
-        return None
-
-    def _updateVariableList(self):
-        """解析主题和正文中的所有 {{}} 并更新变量列表（UI 占位）"""
-        # 高级模式下可在此显示已定义的变量列表
-        # 当前为占位实现，后续添加右侧面板后将在此更新 UI
-        pass
-
-    def _onImportData(self):
-        """导入数据文件（UI 占位，功能待实现）"""
-        QMessageBox.information(
-            self,
-            '导入数据',
-            '此功能将在后续版本实现。\n\n'
-            '预期流程：\n'
-            '1. 选择 Excel/CSV 文件\n'
-            '2. 自动识别列头作为变量名\n'
-            '3. 显示数据预览\n'
-            '4. 发送时按行替换变量'
-        )
-
-
 class MarqueeLabel(QWidget):
     """跑马灯提示条：显示一行循环滚动的提示文字（如已删除保留提示）
 
@@ -2967,3 +2726,244 @@ class NormalPage(QWidget):
         self.preview_btn.setVisible(False)
         self.restore_btn.setVisible(restorable)
         # 恢复需记录当前查看的记录 id（onRequestView 已在 fillFromRecord 前设置）
+
+
+class AdvancedPage(NormalPage):
+    """高级模式发信页：在普通模式基础上增加变量标记（Payload Positions）功能
+
+    继承 NormalPage，复用所有普通模式功能：
+      - 抄送/密送、富文本编辑、附件、收件人选择等
+      - 发送、存草稿、预览等操作
+
+    新增高级模式特有功能：
+      - 在主题/正文中标记变量 {{变量名}}
+      - 右侧变量管理面板
+      - 数据导入占位（后续对接 Excel/CSV）
+    """
+
+    # 变量包裹正则：匹配 {{...}} 格式
+    VARIABLE_PATTERN = re.compile(r'\{\{(.*?)\}\}')
+
+    def __init__(self, db, on_back):
+        """初始化高级模式页面
+
+        参数：
+            db<MailDatabase>：数据库引用
+            on_back<callable>：返回列表页的回调
+        """
+        super().__init__(db, on_back)
+        # 覆盖构建高级模式 UI
+        self._buildAdvancedUi()
+
+    def _buildAdvancedUi(self):
+        """在普通模式 UI 基础上添加高级模式特有功能
+
+        由于已调用 NormalPage.buildUi()，此处只需添加：
+          1. 主题编辑器的变量标记按钮
+          2. 正文编辑器的变量标记按钮
+          3. 右侧变量管理面板（通过布局调整实现）
+        """
+        # 1. 为主题编辑器添加变量标记功能
+        self._enhanceSubjectEditor()
+
+        # 2. 为正文编辑器添加变量标记功能
+        self._enhanceBodyEditor()
+
+        # 3. 在顶部操作栏添加数据导入按钮（UI 占位）
+        self._addDataImportButton()
+
+    def _enhanceSubjectEditor(self):
+        """为主题编辑器添加变量标记按钮"""
+        # 主题标记按钮
+        self.subject_mark_btn = QPushButton('标记变量')
+        self.subject_mark_btn.setToolTip('将选中文字标记为变量')
+        self.subject_mark_btn.setStyleSheet(
+            'QPushButton{background:#fff3cd;color:#856404;'
+            'border:1px solid #ffc107;padding:3px 8px;border-radius:3px;}'
+            'QPushButton:hover{background:#ffe69c;}'
+        )
+        self.subject_mark_btn.clicked.connect(
+            lambda: self._markSelectionAsVariable(self.title_edit)
+        )
+
+        # 将按钮插入到主题行
+        # title_edit 在 buildTitleRow() 中创建，其父 widget 包含主题行布局
+        parent = self.title_edit.parent()
+        if parent and parent.layout():
+            layout = parent.layout()
+            layout.addWidget(self.subject_mark_btn)
+
+        # 连接文本变化信号以更新变量列表
+        self.title_edit.textChanged.connect(self._updateVariableList)
+
+    def _enhanceBodyEditor(self):
+        """为正文编辑器添加变量标记功能（在正文下方添加按钮行）"""
+        # 创建按钮行
+        self.body_btn_row = QHBoxLayout()
+
+        # 标记选中变量按钮
+        self.body_mark_btn = QPushButton('标记选中为变量')
+        self.body_mark_btn.setToolTip('将正文中选中的文字包裹为 {{变量名}}')
+        self.body_mark_btn.setStyleSheet(
+            'QPushButton{background:#fff3cd;color:#856404;'
+            'border:1px solid #ffc107;padding:4px 12px;border-radius:3px;}'
+            'QPushButton:hover{background:#ffe69c;}'
+        )
+        self.body_mark_btn.clicked.connect(
+            lambda: self._markSelectionAsVariable(self.body_editor)
+        )
+        self.body_btn_row.addWidget(self.body_mark_btn)
+
+        # 删除选中变量按钮
+        self.body_remove_btn = QPushButton('删除选中变量')
+        self.body_remove_btn.setToolTip('删除光标所在位置的 {{变量名}}')
+        self.body_remove_btn.setStyleSheet(
+            'QPushButton{background:#f8d7da;color:#721c24;'
+            'border:1px solid #f5c6cb;padding:4px 12px;border-radius:3px;}'
+            'QPushButton:hover{background:#f1b0b5;}'
+        )
+        self.body_remove_btn.clicked.connect(
+            lambda: self._removeVariableAtCursor(self.body_editor)
+        )
+        self.body_btn_row.addWidget(self.body_remove_btn)
+
+        self.body_btn_row.addStretch()
+
+        # 将按钮行插入到正文编辑器下方
+        main_layout = self.layout()
+        if main_layout:
+            # 找到 body_editor 在布局中的位置，在其后插入按钮行
+            insert_idx = -1
+            for i in range(main_layout.count()):
+                item = main_layout.itemAt(i)
+                if item and item.widget() == self.body_editor:
+                    insert_idx = i + 1
+                    break
+
+            if insert_idx > 0:
+                main_layout.insertLayout(insert_idx, self.body_btn_row)
+            else:
+                main_layout.addLayout(self.body_btn_row)
+
+        # 连接文本变化信号
+        self.body_editor.textChanged.connect(self._updateVariableList)
+
+    def _addDataImportButton(self):
+        """在顶部操作栏添加数据导入按钮（UI 占位）"""
+        # 数据导入按钮
+        self.import_data_btn = QToolButton()
+        self.import_data_btn.setText('📂 导入数据')
+        self.import_data_btn.setToolTip('导入 Excel/CSV 数据文件（功能待实现）')
+        self.import_data_btn.setMinimumHeight(34)
+        self.import_data_btn.setStyleSheet(
+            'QToolButton{background:#28a745;color:#fff;'
+            'border:0;padding:4px 12px;border-radius:4px;}'
+            'QToolButton:hover{background:#1e7e34;}'
+        )
+        self.import_data_btn.clicked.connect(self._onImportData)
+
+        # 将按钮添加到顶部操作栏
+        self.send_btn.parentWidget()
+        top_bar = self.send_btn.parentWidget()
+        if top_bar and top_bar.layout():
+            layout = top_bar.layout()
+            # 在发送按钮之前插入
+            layout.insertWidget(layout.indexOf(self.send_btn), self.import_data_btn)
+
+    # ---------------- 变量标记逻辑 ----------------
+
+    def _markSelectionAsVariable(self, widget):
+        """将输入框/编辑器中的选中文字包裹为 {{变量名}}
+
+        参数：
+            widget<QLineEdit|QTextEdit>：目标输入控件
+        """
+        if isinstance(widget, QLineEdit):
+            selected = widget.selectedText()
+            if not selected:
+                # 未选中文字时，在光标处插入一个空变量占位
+                pos = widget.cursorPosition()
+                text = widget.text()
+                new_text = text[:pos] + '{{变量名}}' + text[pos:]
+                widget.setText(new_text)
+                widget.setCursorPosition(pos + 2)
+            else:
+                text = widget.text()
+                selected_start = text.find(selected)
+                selected_end = selected_start + len(selected)
+                new_text = text[:selected_start] + '{{' + selected + '}}' + text[selected_end:]
+                widget.setText(new_text)
+        elif isinstance(widget, QTextEdit):
+            cursor = widget.textCursor()
+            if not cursor.hasSelection():
+                # 未选中文字时，在光标处插入空变量占位
+                cursor.insertText('{{变量名}}')
+            else:
+                selected = cursor.selectedText()
+                cursor.beginEditBlock()
+                cursor.removeSelectedText()
+                cursor.insertText('{{' + selected + '}}')
+                cursor.endEditBlock()
+        self._updateVariableList()
+
+    def _removeVariableAtCursor(self, widget):
+        """删除光标所在位置的 {{变量名}} 标记
+
+        参数：
+            widget<QLineEdit|QTextEdit>：目标输入控件
+        """
+        if isinstance(widget, QLineEdit):
+            pos = widget.cursorPosition()
+            text = widget.text()
+            # 查找光标附近的 {{...}}
+            match = self._findVariableAround(text, pos)
+            if match:
+                start, end = match.span()
+                new_text = text[:start] + text[end:]
+                widget.setText(new_text)
+        elif isinstance(widget, QTextEdit):
+            cursor = widget.textCursor()
+            pos = cursor.position()
+            text = widget.toPlainText()
+            match = self._findVariableAround(text, pos)
+            if match:
+                start, end = match.span()
+                cursor.setPosition(start)
+                cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+                cursor.removeSelectedText()
+        self._updateVariableList()
+
+    def _findVariableAround(self, text, pos):
+        """查找指定位置附近的 {{...}} 匹配
+
+        参数：
+            text<str>：完整文本
+            pos<int>：光标位置
+
+        返回：
+            re.Match|None：匹配对象或 None
+        """
+        for match in self.VARIABLE_PATTERN.finditer(text):
+            start, end = match.span()
+            if start <= pos <= end:
+                return match
+        return None
+
+    def _updateVariableList(self):
+        """解析主题和正文中的所有 {{}} 并更新变量列表（UI 占位）"""
+        # 高级模式下可在此显示已定义的变量列表
+        # 当前为占位实现，后续添加右侧面板后将在此更新 UI
+        pass
+
+    def _onImportData(self):
+        """导入数据文件（UI 占位，功能待实现）"""
+        QMessageBox.information(
+            self,
+            '导入数据',
+            '此功能将在后续版本实现。\n\n'
+            '预期流程：\n'
+            '1. 选择 Excel/CSV 文件\n'
+            '2. 自动识别列头作为变量名\n'
+            '3. 显示数据预览\n'
+            '4. 发送时按行替换变量'
+        )
