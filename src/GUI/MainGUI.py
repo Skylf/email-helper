@@ -367,8 +367,8 @@ class MainWindow(QMainWindow):
         self.normal_page.setRestoreCallback(self.onRequestRestore)
         self.stack.addWidget(self.normal_page)
 
-        # 高级模式占位页（开发中提示）
-        self.high_page = HighModePlaceholderPage(on_back=self.showListPage)
+        # 高级模式发信页：支持在主题/正文中标记变量
+        self.high_page = AdvancedPage(db=self.db, on_back=self.showListPage)
         self.stack.addWidget(self.high_page)
 
         # 默认进入：列表主页 + 左栏默认选中「草稿箱」（本项目只发不收）
@@ -709,6 +709,259 @@ class HighModePlaceholderPage(QWidget):
         btn.setMinimumWidth(140); btn.setMinimumHeight(36)
         btn.clicked.connect(self.on_back)
         row.addWidget(btn); row.addStretch(); v.addLayout(row); v.addStretch()
+
+
+class AdvancedPage(QWidget):
+    """高级模式发信页：支持在主题/正文中标记变量（Payload Positions），为后续批量替换做准备
+
+    核心交互：
+      - 选中文字 → 点击「标记为变量」→ 包裹成 {{变量名}}
+      - 文本变化时自动解析所有 {{}} 并在右侧列表显示
+      - 右侧列表可删除、清空变量
+    """
+
+    # 变量包裹正则：匹配 {{...}} 格式
+    VARIABLE_PATTERN = re.compile(r'\{\{(.*?)\}\}')
+
+    def __init__(self, db, on_back):
+        """初始化高级模式页面
+
+        参数：
+            db<MailDatabase>：数据库引用
+            on_back<callable>：返回列表页的回调
+        """
+        super().__init__()
+        self.db = db
+        self.on_back = on_back
+        self._buildUi()
+
+    # ---------------- UI 构建 ----------------
+
+    def _buildUi(self):
+        """构建高级模式发信页整体布局"""
+        root = QHBoxLayout(self)
+        root.setContentsMargins(12, 10, 12, 12)
+        root.setSpacing(8)
+
+        # 左侧：主编辑区
+        left_panel = QVBoxLayout()
+        left_panel.setSpacing(6)
+
+        # 1. 顶部操作栏
+        left_panel.addLayout(self._buildTopBar())
+
+        # 2. 收件人区（高级模式下收件人从数据读取，此处仅显示“将从文件读取”）
+        recipient_widget = QWidget()
+        recipient_layout = QHBoxLayout(recipient_widget)
+        recipient_layout.setContentsMargins(0, 0, 0, 0)
+        recipient_layout.addWidget(QLabel('收件人：'))
+        self.recipient_source_edit = QLineEdit()
+        self.recipient_source_edit.setPlaceholderText('将从导入的 Excel/CSV 文件读取第一列作为收件人')
+        self.recipient_source_edit.setReadOnly(True)
+        recipient_layout.addWidget(self.recipient_source_edit, 1)
+        left_panel.addWidget(recipient_widget)
+
+        # 3. 主题行（支持变量标记）
+        title_row = QHBoxLayout()
+        title_row.addWidget(QLabel('主题：'))
+        self.subject_edit = QLineEdit()
+        self.subject_edit.setPlaceholderText('输入主题，选中文字后可点击「标记为变量」')
+        self.subject_edit.textChanged.connect(self._updateVariableList)
+        title_row.addWidget(self.subject_edit, 1)
+        # 主题变量操作按钮
+        self.subject_mark_btn = QPushButton('标记选中')
+        self.subject_mark_btn.setToolTip('将选中文字标记为变量')
+        self.subject_mark_btn.clicked.connect(lambda: self._markSelectionAsVariable(self.subject_edit))
+        title_row.addWidget(self.subject_mark_btn)
+        left_panel.addLayout(title_row)
+
+        # 4. 正文编辑器（支持变量标记）
+        left_panel.addWidget(QLabel('正文：'))
+        self.body_editor = QTextEdit()
+        self.body_editor.setPlaceholderText('输入正文，选中文字后可点击「标记为变量」')
+        self.body_editor.textChanged.connect(self._updateVariableList)
+        left_panel.addWidget(self.body_editor, 1)
+
+        # 5. 正文变量操作按钮行
+        body_btn_row = QHBoxLayout()
+        self.body_mark_btn = QPushButton('标记选中为变量')
+        self.body_mark_btn.setToolTip('将正文中选中的文字包裹为 {{变量名}}')
+        self.body_mark_btn.clicked.connect(lambda: self._markSelectionAsVariable(self.body_editor))
+        body_btn_row.addWidget(self.body_mark_btn)
+        self.body_remove_btn = QPushButton('删除选中变量')
+        self.body_remove_btn.setToolTip('删除光标所在位置的 {{变量名}}')
+        self.body_remove_btn.clicked.connect(lambda: self._removeVariableAtCursor(self.body_editor))
+        body_btn_row.addWidget(self.body_remove_btn)
+        body_btn_row.addStretch()
+        left_panel.addLayout(body_btn_row)
+
+        root.addLayout(left_panel, 3)  # 左侧占 3 份
+
+        # 右侧：变量管理面板
+        right_panel = QVBoxLayout()
+        right_panel.setSpacing(6)
+        right_panel.addWidget(QLabel('变量位置（Payload Positions）'))
+        right_panel.addWidget(QLabel('标记 {{变量名}} 将在发送时被替换'))
+
+        # 变量列表
+        self.variable_list = QListWidget()
+        right_panel.addWidget(self.variable_list, 1)
+
+        # 变量操作按钮
+        var_btn_row = QHBoxLayout()
+        self.clear_all_btn = QPushButton('清空所有变量')
+        self.clear_all_btn.clicked.connect(self._clearAllVariables)
+        var_btn_row.addWidget(self.clear_all_btn)
+        right_panel.addLayout(var_btn_row)
+
+        # 数据导入占位提示
+        right_panel.addWidget(QLabel(''))
+        self.data_hint_label = QLabel('📂 下一步：导入 Excel/CSV 数据文件')
+        self.data_hint_label.setStyleSheet('color:#666; padding:10px; background:#f5f7fa; border-radius:4px;')
+        self.data_hint_label.setWordWrap(True)
+        right_panel.addWidget(self.data_hint_label)
+
+        root.addLayout(right_panel, 2)  # 右侧占 2 份
+
+        self._updateVariableList()
+
+    def _buildTopBar(self):
+        """构建顶部操作栏：返回 / 存草稿 / 发送"""
+        row = QHBoxLayout()
+        row.setSpacing(8)
+
+        self.back_btn = QPushButton('返回')
+        self.back_btn.clicked.connect(self.on_back)
+        row.addWidget(self.back_btn)
+
+        self.draft_btn = QPushButton('存草稿')
+        self.draft_btn.setMinimumHeight(34)
+        row.addWidget(self.draft_btn)
+
+        row.addSpacing(12)
+
+        self.send_btn = QPushButton('发送')
+        self.send_btn.setMinimumHeight(34)
+        self.send_btn.setMinimumWidth(90)
+        row.addWidget(self.send_btn)
+
+        row.addStretch()
+        return row
+
+    # ---------------- 变量标记逻辑 ----------------
+
+    def _markSelectionAsVariable(self, widget):
+        """将输入框/编辑器中的选中文字包裹为 {{变量名}}
+
+        参数：
+            widget<QLineEdit|QTextEdit>：目标输入控件
+        """
+        if isinstance(widget, QLineEdit):
+            selected = widget.selectedText()
+            if not selected:
+                # 未选中文字时，在光标处插入一个空变量占位
+                pos = widget.cursorPosition()
+                text = widget.text()
+                new_text = text[:pos] + '{{变量名}}' + text[pos:]
+                widget.setText(new_text)
+                widget.setCursorPosition(pos + 2)  # 光标移到 {{后
+            else:
+                text = widget.text()
+                selected_start = text.find(selected)
+                selected_end = selected_start + len(selected)
+                new_text = text[:selected_start] + '{{' + selected + '}}' + text[selected_end:]
+                widget.setText(new_text)
+        elif isinstance(widget, QTextEdit):
+            cursor = widget.textCursor()
+            if not cursor.hasSelection():
+                # 未选中文字时，在光标处插入空变量占位
+                cursor.insertText('{{变量名}}')
+            else:
+                selected = cursor.selectedText()
+                cursor.beginEditBlock()
+                cursor.removeSelectedText()
+                cursor.insertText('{{' + selected + '}}')
+                cursor.endEditBlock()
+        self._updateVariableList()
+
+    def _removeVariableAtCursor(self, widget):
+        """删除光标所在位置的 {{变量名}} 标记
+
+        参数：
+            widget<QLineEdit|QTextEdit>：目标输入控件
+        """
+        if isinstance(widget, QLineEdit):
+            pos = widget.cursorPosition()
+            text = widget.text()
+            # 查找光标附近的 {{...}}
+            match = self._findVariableAround(text, pos)
+            if match:
+                start, end = match.span()
+                new_text = text[:start] + text[end:]
+                widget.setText(new_text)
+        elif isinstance(widget, QTextEdit):
+            cursor = widget.textCursor()
+            pos = cursor.position()
+            text = widget.toPlainText()
+            match = self._findVariableAround(text, pos)
+            if match:
+                start, end = match.span()
+                cursor.setPosition(start)
+                cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+                cursor.removeSelectedText()
+        self._updateVariableList()
+
+    def _findVariableAround(self, text, pos):
+        """查找指定位置附近的 {{...}} 匹配
+
+        参数：
+            text<str>：完整文本
+            pos<int>：光标位置
+
+        返回：
+            re.Match|None：匹配对象或 None
+        """
+        for match in self.VARIABLE_PATTERN.finditer(text):
+            start, end = match.span()
+            if start <= pos <= end:
+                return match
+        return None
+
+    def _clearAllVariables(self):
+        """清空主题和正文中的所有 {{...}} 标记（保留变量名本身）"""
+        self.subject_edit.setText(self.VARIABLE_PATTERN.sub(lambda m: m.group(1), self.subject_edit.text()))
+        self.body_editor.setPlainText(self.VARIABLE_PATTERN.sub(lambda m: m.group(1), self.body_editor.toPlainText()))
+        self._updateVariableList()
+
+    def _updateVariableList(self):
+        """解析主题和正文中的所有 {{}} 并更新右侧变量列表"""
+        self.variable_list.clear()
+        all_variables = set()
+
+        # 从主题提取
+        for match in self.VARIABLE_PATTERN.finditer(self.subject_edit.text()):
+            all_variables.add(match.group(1))
+
+        # 从正文提取
+        for match in self.VARIABLE_PATTERN.finditer(self.body_editor.toPlainText()):
+            all_variables.add(match.group(1))
+
+        # 填充列表
+        for var in sorted(all_variables):
+            item = QListWidgetItem('{{' + var + '}}')
+            self.variable_list.addItem(item)
+
+    # ---------------- 占位方法（后续 API 实现） ----------------
+
+    def clearForm(self):
+        """清空表单（UI 占位）"""
+        self.subject_edit.clear()
+        self.body_editor.clear()
+        self._updateVariableList()
+
+    def setWriteMode(self):
+        """设置为写信模式（UI 占位）"""
+        pass
 
 
 class MarqueeLabel(QWidget):
