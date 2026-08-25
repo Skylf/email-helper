@@ -50,3 +50,5 @@ test/
 
 # ---- 加密实现源码与产物（含密钥分片，整体不入库；发布时仅随包分发编译好的 .pyd 与 .enc）----
 src/security/
+# 例外：setup_crypt.py 仅为密钥扩展编译脚本，不含密钥分片，入库便于 CI 直接使用
+!src/security/setup_crypt.py
