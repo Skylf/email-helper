@@ -1,0 +1,72 @@
+# 邮件助手 macOS 构建工作流
+# 用途：在 GitHub 托管的 macOS Runner 上用 PyInstaller 生成 邮件助手.app，并作为 Release 资产上传。
+# 触发：推送 v* 标签或手动运行（workflow_dispatch）。
+#
+# 重要说明（涉及安全的文件均为 .gitignore，不入库）：
+#   - cred_app.c（C 扩展源码）、credentials.enc（SMTP 密文）、setup_crypt.py（密钥扩展构建脚本）、app_icon.icns（mac 图标）均不在仓库中。
+#   - 需在仓库 Settings -> Secrets -> Actions 配置 base64 秘密（缺哪个，哪块能力就缺失）：
+#       CRED_APP_C           -> base64 的 cred_app.c（必须，否则构建不出解密扩展）
+#       CREDENTIALS_ENC      -> base64 的 credentials.enc（必须，否则程序无 SMTP 凭据）
+#       CRED_SETUP_SCRIPT    -> base64 的 setup_crypt.py（必须，负责把 .c 编译为 .so）
+#       APP_ICON_ICNS        -> base64 的 app_icon.icns（建议，缺失则打包无图标）
+# 若必要秘密未配置，生成的 .app 功能不完整，仅适合验证打包流程。
+name: build-mac
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build-mac-app:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 提供加密安全类文件（来自 secrets）
+        shell: bash
+        env:
+          CRED_APP_C: ${{ secrets.CRED_APP_C }}
+          CREDENTIALS_ENC: ${{ secrets.CREDENTIALS_ENC }}
+          CRED_SETUP_SCRIPT: ${{ secrets.CRED_SETUP_SCRIPT }}
+          APP_ICON_ICNS: ${{ secrets.APP_ICON_ICNS }}
+        run: |
+          SEC=src/security
+          mkdir -p "$SEC"
+          [ -n "$CRED_APP_C" ]        && echo "$CRED_APP_C"        | base64 -d > "$SEC/cred_app.c"
+          [ -n "$CREDENTIALS_ENC" ]   && echo "$CREDENTIALS_ENC"   | base64 -d > "$SEC/credentials.enc"
+          [ -n "$CRED_SETUP_SCRIPT" ] && echo "$CRED_SETUP_SCRIPT" | base64 -d > "$SEC/setup_crypt.py"
+          [ -n "$APP_ICON_ICNS" ]     && echo "$APP_ICON_ICNS"     | base64 -d > "$SEC/app_icon.icns"
+          echo "已按 secrets 恢复安全文件（缺失项将被跳过）"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt "pyinstaller"
+
+      - name: 编译密钥 C 扩展
+        run: |
+          cd src/security
+          python setup_crypt.py build_ext --inplace
+
+      - name: PyInstaller 打包 .app
+        run: pyinstaller --noconfirm --clean 邮件助手_mac.spec
+
+      - name: 生成压缩包（便于上传）
+        run: |
+          cd dist
+          ditto -c -k --sequesterRsrc "邮件助手.app" "邮件助手-mac.app.zip"
+
+      - name: 上传 .app 压缩包到 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: dist/邮件助手-mac.app.zip
+          tag: ${{ github.ref_name }}
+          overwrite: true
