@@ -2,13 +2,14 @@
 # 用途：在 GitHub 托管的 macOS Runner 上用 PyInstaller 生成 邮件助手.app，并作为 Release 资产上传。
 # 触发：推送 v* 标签或手动运行（workflow_dispatch）。
 #
-# 重要说明（涉及安全的文件均为 .gitignore，不入库）：
-#   - cred_app.c（C 扩展源码）、credentials.enc（SMTP 密文）、setup_crypt.py（密钥扩展构建脚本）、app_icon.icns（mac 图标）均不在仓库中。
-#   - 需在仓库 Settings -> Secrets -> Actions 配置 base64 秘密（缺哪个，哪块能力就缺失）：
-#       CRED_APP_C           -> base64 的 cred_app.c（必须，否则构建不出解密扩展）
+# 安全文件来源说明（避免 single secret 超过 48KB 上限）：
+#   - app_icon.icns（约 1.8MB）：随仓库跟踪于 assets/icon/app_icon.icns，不占用 secret。
+#   - cred_app.c（约 344KB）：AES-256-CBC 加密为 src/crypto/cred_app.c.enc 随仓库跟踪；
+#     解密密钥以 hex 形式放 CRED_FILE_KEY secret，CI 内用 openssl 现场解密还原。
+#   - 仍需在仓库 Settings -> Secrets -> Actions 配置（缺哪个，哪块能力就缺失）：
 #       CREDENTIALS_ENC      -> base64 的 credentials.enc（必须，否则程序无 SMTP 凭据）
 #       CRED_SETUP_SCRIPT    -> base64 的 setup_crypt.py（必须，负责把 .c 编译为 .so）
-#       APP_ICON_ICNS        -> base64 的 app_icon.icns（建议，缺失则打包无图标）
+#       CRED_FILE_KEY        -> hex 的 AES 解密密钥（必须，用于现场解密 cred_app.c）
 # 若必要秘密未配置，生成的 .app 功能不完整，仅适合验证打包流程。
 name: build-mac
 
@@ -28,20 +29,24 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 提供加密安全类文件（来自 secrets）
+      - name: 提供加密安全类文件
         shell: bash
         env:
-          CRED_APP_C: ${{ secrets.CRED_APP_C }}
           CREDENTIALS_ENC: ${{ secrets.CREDENTIALS_ENC }}
           CRED_SETUP_SCRIPT: ${{ secrets.CRED_SETUP_SCRIPT }}
-          APP_ICON_ICNS: ${{ secrets.APP_ICON_ICNS }}
+          CRED_FILE_KEY: ${{ secrets.CRED_FILE_KEY }}
         run: |
           SEC=src/security
           mkdir -p "$SEC"
-          [ -n "$CRED_APP_C" ]        && echo "$CRED_APP_C"        | base64 -d > "$SEC/cred_app.c"
-          [ -n "$CREDENTIALS_ENC" ]   && echo "$CREDENTIALS_ENC"   | base64 -d > "$SEC/credentials.enc"
+          # 1) 用仓库内加密的 C 源码 + secret 密钥现场解密出 cred_app.c
+          [ -n "$CRED_FILE_KEY" ] && openssl enc -d -aes-256-cbc \
+            -K "$CRED_FILE_KEY" -iv "000102030405060708090a0b0c0d0e0f" \
+            -in src/crypto/cred_app.c.enc -out "$SEC/cred_app.c" \
+            && echo "已还原 cred_app.c"
+          # 2) SMTP 密文
+          [ -n "$CREDENTIALS_ENC" ] && echo "$CREDENTIALS_ENC" | base64 -d > "$SEC/credentials.enc"
+          # 3) 密钥扩展构建脚本
           [ -n "$CRED_SETUP_SCRIPT" ] && echo "$CRED_SETUP_SCRIPT" | base64 -d > "$SEC/setup_crypt.py"
-          [ -n "$APP_ICON_ICNS" ]     && echo "$APP_ICON_ICNS"     | base64 -d > "$SEC/app_icon.icns"
           echo "已按 secrets 恢复安全文件（缺失项将被跳过）"
 
       - name: 安装依赖

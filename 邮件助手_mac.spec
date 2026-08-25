@@ -17,8 +17,8 @@ SEC = os.path.join(PROJECT_ROOT, 'src', 'security')
 CRED_SO = glob.glob(os.path.join(SEC, 'cred_app*.so'))
 BINARIES = [(CRED_SO[0], '.')] if CRED_SO else []
 
-# 图标：mac 需 .icns（用户制作）；若暂缺则不打包图标，避免出错
-ICON = os.path.join(SEC, 'app_icon.icns')
+# 图标：mac 需 .icns（放入仓库 assets/icon/app_icon.icns，随仓库跟踪，供 CI 与本地使用）
+ICON = os.path.join(PROJECT_ROOT, 'assets', 'icon', 'app_icon.icns')
 ICON_CFG = ICON if os.path.exists(ICON) else None
 
 a = Analysis(
