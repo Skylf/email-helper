@@ -63,7 +63,7 @@ from activity.recipient_bulk import (
 )
 from activity.mail_query import queryEmails
 
-# 设置模块：option 包位于项目根（非 src），先注入项目根到 sys.path 再导入设置管理器单例
+# 设置模块：option 包现位于 src 下（src/option），将 src 加入 sys.path 即可导入设置管理器单例
 if os.path.dirname(os.path.dirname(os.path.abspath(__file__))) not in sys.path:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from option.settings import settings

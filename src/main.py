@@ -13,10 +13,8 @@ from PyQt6.QtWidgets import QApplication
 from path_manager import PathManager
 
 # 统一通过 PathManager 定位源码包根目录（开发=src，打包=_MEIPASS），
-# 追加到 sys.path，保证「GUI」「Email」包在两种环境下都能被导入。
+# 追加到 sys.path，保证「GUI」「Email」「option」「logger」等包在两种环境下都能被导入。
 sys.path.insert(0, str(PathManager.source_root()))
-# 另将项目根目录（source_root 的上一级）加入 sys.path，使项目根下的 option 设置包可被导入。
-sys.path.insert(0, str(PathManager.source_root().parent))
 
 # 日志系统：在导入业务模块之前初始化，使后续所有模块都能直接使用日志
 from logger import setupLogging, getLogger
