@@ -8,7 +8,11 @@
 import os
 import re
 
-# 常用邮箱分隔符（逗号/分号/制表符/换行）用于拆分“一行含多个邮箱”的场景
+# 日志系统：记录收件人文件解析过程（文件类型、解析数量、异常等）
+from logger import getLogger
+log = getLogger(__name__)
+
+# 常用邮箱分隔符（逗号/分号/制表符/换行）用于拆分"一行含多个邮箱"的场景
 SEPARATOR_RE = re.compile(r'[,;\t，；]+')
 # 邮箱提取正则：从任意文本中匹配邮箱地址（可同时命中单元格中多个邮箱）
 EMAIL_FIND_RE = re.compile(
@@ -61,10 +65,16 @@ def parseRecipientFile(path):
         return []
     ext = os.path.splitext(path)[1].lower()
     if ext in ('.xlsx', '.xls'):
-        return _parseExcel(path)
+        log.info('解析 Excel 收件人文件: %s', path)
+        result = _parseExcel(path)
+        log.info('Excel 解析完成，识别 %d 个收件人', len(result))
+        return result
     if ext in ('.txt', '.csv'):
         # TXT 与 CSV 均为按分隔符逐行读取的文本，走同一套提取逻辑
-        return _parseTxt(path)
+        log.info('解析 %s 收件人文件: %s', ext.upper(), path)
+        result = _parseTxt(path)
+        log.info('%s 解析完成，识别 %d 个收件人', ext.upper(), len(result))
+        return result
     raise ValueError('不支持的文件类型：%s（仅支持 Excel/CSV/TXT）' % ext)
 
 
@@ -78,12 +88,34 @@ def _parseTxt(path):
         list<str>：识别出的邮箱列表
     """
     emails = []
-    with open(path, 'r', encoding='utf-8', errors='ignore') as fobj:
+    # 使用设置中配置的 CSV/TXT 默认编码读取，解决中文文件乱码/读失败问题
+    encoding = _getDataFileEncoding()
+    try:
+        fobj = open(path, 'r', encoding=encoding, errors='ignore')
+    except LookupError:
+        # 遇到未知编码名时回退 UTF-8，保证文件仍可读取
+        fobj = open(path, 'r', encoding='utf-8', errors='ignore')
+    with fobj:
         for line in fobj:
             # 按分隔符拆分后逐段提取邮箱，避免同一行内多个邮箱被合并吞掉
             for seg in SEPARATOR_RE.split(line):
                 emails.extend(extractEmails(seg))
     return _dedupKeepOrder(emails)
+
+
+def _getDataFileEncoding():
+    """读取设置中配置的 CSV/TXT 收件人数据文件默认编码
+
+    返回：
+        str：用户设置的编码名（如 UTF-8 / GBK）；读取设置失败时回退 'UTF-8'
+    """
+    try:
+        # 控件加载设置模块；option 位于项目根，导入失败时不影响本方法功能
+        from option.settings import settings
+        return settings.get('data_file_encoding') or 'UTF-8'
+    except Exception:
+        # 设置模块不可用时，按通用默认编码处理
+        return 'UTF-8'
 
 
 def _parseExcel(path):

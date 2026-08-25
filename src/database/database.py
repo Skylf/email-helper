@@ -6,6 +6,7 @@
 #       列表页（草稿箱 / 已发送 / 已删除 / 垃圾箱）的真实数据统一由本模块读写。
 #       使用标准库 sqlite3，无第三方依赖；开发/打包环境下数据库文件位置自适应。
 
+import base64
 import json
 import os
 import sqlite3
@@ -18,7 +19,10 @@ try:
     from path_manager import PathManager
 except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from path_manager import PathManager
+
+# 日志系统：记录数据库初始化、增删改查与异常
+from logger import getLogger
+log = getLogger(__name__)
 
 # 邮件分类常量（对应列表页四个菜单）
 CATEGORY_DRAFT = 'draft'      # 草稿箱
@@ -28,6 +32,63 @@ CATEGORY_JUNK = 'junk'        # 垃圾箱
 
 # 数据库默认文件名（相对数据根目录）
 DEFAULT_DB_FILENAME = 'email_helper.db'
+
+# ---------------- 任务配置混淆 ----------------
+# 落库的任务配置含收件人/正文/附件路径/负载映射等敏感信息，存储前做工程级混淆，
+# 防止数据库文件被直接读取即可见明文。若需更高级别保密，可替换为 AES-GCM。
+_CONFIG_OBF_KEY = b'email_helper_cfg_obf@2026'
+_CONFIG_ENC_PREFIX = 'enc1:'
+
+
+def _xorObfuscate(raw_bytes):
+    """按固定密钥逐字节异或做混淆（同一密钥加解密对称）
+
+    参数：
+        raw_bytes<bytes>：待混淆的原始字节
+    返回：
+        bytes：混淆后的字节
+    """
+    klen = len(_CONFIG_OBF_KEY)
+    return bytes(b ^ _CONFIG_OBF_KEY[i % klen] for i, b in enumerate(raw_bytes))
+
+
+def encryptTaskConfig(obj):
+    """把任务配置对象序列化并混淆，得到可安全落库的密文字符串
+
+    参数：
+        obj<dict|str>：任务配置（dict 或已序列化的 str）
+    返回：
+        str：带 enc1: 前缀的密文
+    """
+    if isinstance(obj, str):
+        raw = obj
+    else:
+        raw = json.dumps(obj or {}, ensure_ascii=False)
+    data = raw.encode('utf-8', 'ignore')
+    return _CONFIG_ENC_PREFIX + base64.b64encode(_xorObfuscate(data)).decode('ascii')
+
+
+def decryptTaskConfig(cipher_text):
+    """解析数据库中的任务配置（支持新混淆格式，兼容旧明文数据）
+
+    参数：
+        cipher_text<str>：数据库 config 字段内容（密文或旧明文）
+    返回：
+        dict：还原的任务配置 dict
+    """
+    s = cipher_text if isinstance(cipher_text, str) else ''
+    if s.startswith(_CONFIG_ENC_PREFIX):
+        # 新格式：先 base64 解码，再异或还原为原始 JSON
+        try:
+            raw = base64.b64decode(s[len(_CONFIG_ENC_PREFIX):].encode('ascii'))
+            return json.loads(_xorObfuscate(raw).decode('utf-8'))
+        except Exception:
+            return {}
+    # 旧版本明文 JSON 兼容
+    try:
+        return json.loads(s or '{}')
+    except Exception:
+        return {}
 
 
 class MailDatabase:
@@ -53,6 +114,7 @@ class MailDatabase:
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.ensureSchema()
+        log.info('数据库已连接: %s', self.db_path)
 
     # ---------------- 表结构 ----------------
     def ensureSchema(self):
@@ -351,7 +413,8 @@ class MailDatabase:
             int：新任务 id
         """
         now = send_time if send_time else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        config_str = config if isinstance(config, str) else json.dumps(config or {}, ensure_ascii=False)
+        # 配置落库前做混淆加密，避免数据库文件直读即见收件人/正文等敏感信息
+        config_str = encryptTaskConfig(config) if config else ''
         with self.conn:
             cur = self.conn.execute(
                 'INSERT INTO tasks(category,name,send_time,mail_count,config,created_at) '
@@ -414,8 +477,8 @@ class MailDatabase:
         for key, value in fields.items():
             if key in json_fields:
                 sets.append('%s=?' % key)
-                params.append(json.dumps(value or {}, ensure_ascii=False)
-                              if not isinstance(value, str) else value)
+                # config 字段统一走加密混淆后落库
+                params.append(encryptTaskConfig(value) if value else '')
             elif key in plain_fields:
                 sets.append('%s=?' % key)
                 params.append(value)
@@ -477,12 +540,9 @@ class MailDatabase:
 
     @staticmethod
     def _taskToDict(row):
-        """把任务 sqlite3.Row 转成 dict，config 解析为 dict"""
+        """把任务 sqlite3.Row 转成 dict，config 解析为 dict（自动解密混淆）"""
         d = dict(row)
-        try:
-            d['config'] = json.loads(d.get('config') or '{}')
-        except Exception:
-            d['config'] = {}
+        d['config'] = decryptTaskConfig(d.get('config') or '')
         return d
 
     def close(self):

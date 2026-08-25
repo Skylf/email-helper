@@ -13,9 +13,14 @@
 
 import os
 import re
+import sys
 import time
 import random
 from datetime import datetime, timedelta
+
+# 日志系统：记录 GUI 关键流程（页面切换、发送、设置修改等）
+from logger import getLogger
+log = getLogger(__name__)
 
 from PyQt6.QtCore import Qt, QThread, QTimer, QUrl, QRect, QRectF, pyqtSignal
 from PyQt6.QtGui import (
@@ -28,7 +33,7 @@ from PyQt6.QtWidgets import (
     QTextBrowser, QComboBox, QListWidget, QListWidgetItem, QFileDialog, QColorDialog, QMessageBox,
     QAbstractItemView, QMenu, QToolButton, QSizePolicy, QCheckBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QDialog, QTabWidget,
-    QDateEdit, QRadioButton, QGroupBox, QScrollArea, QSplitter, QButtonGroup,
+    QDateEdit, QRadioButton, QGroupBox, QScrollArea, QSplitter, QButtonGroup, QSpinBox,
     QStyle, QStyleOptionFrame, QFormLayout,
 )
 
@@ -58,10 +63,25 @@ from activity.recipient_bulk import (
 )
 from activity.mail_query import queryEmails
 
-# 发件人昵称默认值（发件人昵称输入框留空时使用）
-DEFAULT_FROM_NAME = 'Lhack 邮箱助手'
+# 设置模块：option 包位于项目根（非 src），先注入项目根到 sys.path 再导入设置管理器单例
+if os.path.dirname(os.path.dirname(os.path.abspath(__file__))) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from option.settings import settings
+
+# 发件人昵称默认值（发件人昵称输入框留空时使用）；来源改为用户设置 default_from_name
+DEFAULT_FROM_NAME = settings.get('default_from_name')
 # SMTP 默认发件邮箱地址：复用本地 config 中加载的发信账号；缺失时用示例占位
 DEFAULT_FROM_EMAIL = SMTP_USERNAME or 'your-email@example.com'
+
+
+def refreshRuntimeDefaults():
+    """设置保存后刷新受设置影响的运行时默认值
+
+    设置界面写入 default_from_name 后调用本函数，用 global 更新模块级
+    DEFAULT_FROM_NAME，使后续发送在昵称留空时用到新的默认昵称。
+    """
+    global DEFAULT_FROM_NAME
+    DEFAULT_FROM_NAME = settings.get('default_from_name')
 
 # 字号下拉框候选字号列表（单位：磅）
 FONT_SIZES = ['8', '9', '10', '11', '12', '14', '16', '18', '20', '24', '28', '32', '36', '48', '72']
@@ -460,6 +480,171 @@ class SearchDialog(QDialog):
         return ret
 
 
+class SettingsDialog(QDialog):
+    """应用设置页：铺满窗口，编辑可修改的用户级设置项，保存后立即生效
+
+    当前开放给用户的设置项仅两类（高风险的连接/清理参数保持代码写死，不开放）：
+      - 默认发件人昵称（default_from_name）：发件人昵称留空时使用的默认名称
+      - 预览批量生成邮件数（preview_batch_size）：高级模式预览页「继续生成」每批数量
+    顶部提供「返回主页」按钮，关闭本页回到主窗口。
+    """
+
+    def __init__(self, parent=None):
+        """初始化设置页
+
+        参数：
+            parent<QWidget|None>：父窗口（用于铺满窗口并定位）
+        """
+        super().__init__(parent)
+        self.setWindowTitle('设置')
+        self.setModal(True)
+        # 铺满父窗口，作为扁平化的整页设置界面
+        if parent is not None:
+            self.resize(parent.size())
+        self.setStyleSheet(CONFIG_STYLE)
+        self._buildUi()
+        self._loadValues()
+
+    def _buildUi(self):
+        """构建设置页布局：顶部标题栏 + 返回主页按钮 + 设置表单 + 底部保存按钮"""
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(14)
+
+        # ---- 顶部：标题 + 返回主页按钮 ----
+        top = QHBoxLayout()
+        title = QLabel('设置')
+        tf = title.font()
+        tf.setPointSize(16)
+        tf.setBold(True)
+        title.setFont(tf)
+        top.addWidget(title)
+        top.addStretch()
+        back_btn = QPushButton('返回主页')
+        back_btn.setStyleSheet('QPushButton{background:#1b7bf2;color:#fff;'
+                               'border:0;padding:6px 16px;border-radius:4px;}'
+                               'QPushButton:hover{background:#1567d0;}')
+        back_btn.clicked.connect(self.goBack)
+        top.addWidget(back_btn)
+        root.addLayout(top)
+
+        # ---- 设置表单区 ----
+        form = QFormLayout()
+        form.setSpacing(16)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        # 默认发件人昵称
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText('发件人昵称留空时的默认显示名称')
+        self.name_edit.setStyleSheet('QLineEdit{padding:6px 8px;border:1px solid #d0d7e2;'
+                                     'border-radius:4px;background:#fff;}')
+        form.addRow('默认发件人昵称：', self.name_edit)
+        # 预览批量生成邮件数
+        self.batch_spin = QSpinBox()
+        self.batch_spin.setRange(1, 100)
+        self.batch_spin.setSuffix(' 封')
+        self.batch_spin.setStyleSheet('QSpinBox{padding:4px 8px;border:1px solid #d0d7e2;'
+                                      'border-radius:4px;background:#fff;}')
+        form.addRow('预览批量生成邮件数：', self.batch_spin)
+        hint = QLabel('仅影响高级模式预览页「继续生成」的每批数量，数值越大生成越快但可能卡顿。')
+        hint.setStyleSheet('color:#888;font-size:12px;')
+        hint.setWordWrap(True)
+        form.addRow('', hint)
+        # CSV/TXT 收件人数据文件默认编码
+        self.encoding_combo = QComboBox()
+        self.encoding_combo.addItems(['UTF-8', 'GBK', 'GB2312', 'GB18030', 'BIG5'])
+        self.encoding_combo.setStyleSheet('QComboBox{padding:4px 8px;border:1px solid #d0d7e2;'
+                                          'border-radius:4px;background:#fff;}')
+        form.addRow('CSV/TXT 文件编码：', self.encoding_combo)
+        enc_hint = QLabel('导入收件人 CSV/TXT 时的默认编码；中文乱码时切换为 GBK。')
+        enc_hint.setStyleSheet('color:#888;font-size:12px;')
+        form.addRow('', enc_hint)
+        # 邮件发信追踪开关（功能预留）
+        self.tracking_check = QCheckBox('开启邮件发信追踪（统计打开率）')
+        self.tracking_check.setToolTip('在邮件头嵌入追踪标记以统计打开率。当前版本仅预留此开关，'
+                                       '实际追踪逻辑后续版本生效。')
+        form.addRow('发信追踪：', self.tracking_check)
+        track_hint = QLabel('当前为功能预留位：保存后不会立即发送追踪标记，待后续版本接通用。')
+        track_hint.setStyleSheet('color:#888;font-size:12px;')
+        form.addRow('', track_hint)
+        # 日志保存路径
+        log_row = QHBoxLayout()
+        self.log_edit = QLineEdit()
+        self.log_edit.setStyleSheet('QLineEdit{padding:6px 8px;border:1px solid #d0d7e2;'
+                                    'border-radius:4px;background:#fff;}')
+        log_row.addWidget(self.log_edit)
+        browse_btn = QPushButton('浏览…')
+        browse_btn.setStyleSheet('QPushButton{background:#f0f2f5;color:#333;border:1px solid #d0d7e2;'
+                                 'padding:5px 12px;border-radius:4px;}'
+                                 'QPushButton:hover{background:#e3e7ec;}')
+        browse_btn.clicked.connect(self._browseLogPath)
+        log_row.addWidget(browse_btn)
+        form.addRow('日志保存路径：', log_row)
+        log_hint = QLabel('日志模块保存目录；默认开发为项目根 logs，打包后为安装目录 logs。')
+        log_hint.setStyleSheet('color:#888;font-size:12px;')
+        form.addRow('', log_hint)
+        root.addLayout(form)
+
+        root.addStretch()
+        # ---- 底部保存按钮 ----
+        save_btn = QPushButton('保存设置')
+        save_btn.setStyleSheet('QPushButton{background:#1b7bf2;color:#fff;'
+                               'border:0;padding:8px 28px;border-radius:4px;font-weight:bold;}'
+                               'QPushButton:hover{background:#1567d0;}')
+        save_btn.clicked.connect(self.saveChanges)
+        save_row = QHBoxLayout()
+        save_row.addStretch()
+        save_row.addWidget(save_btn)
+        root.addLayout(save_row)
+
+    def _loadValues(self):
+        """把当前设置值回填到各控件"""
+        self.name_edit.setText(str(settings.get('default_from_name')))
+        self.batch_spin.setValue(int(settings.get('preview_batch_size')))
+        # CSV/TXT 文件编码：期望值对应下拉项时选中该项，否则回退首个（UTF-8）
+        enc = str(settings.get('data_file_encoding'))
+        idx = self.encoding_combo.findText(enc)
+        self.encoding_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        # 发信追踪开关 + 日志路径
+        self.tracking_check.setChecked(bool(settings.get('mail_tracking_enabled')))
+        self.log_edit.setText(str(settings.get('log_path') or ''))
+
+    def saveChanges(self):
+        """读取界面输入写回设置并落盘，随后刷新运行时默认值以立即生效"""
+        name = self.name_edit.text().strip()
+        # 昵称留空时回退到内置默认值，避免保存空昵称
+        settings.set('default_from_name',
+                     name or settings.DEFAULTS['default_from_name'])
+        settings.set('preview_batch_size', self.batch_spin.value())
+        # 新增三项：文件编码既服务于收件人解析；追踪开关为后续功能预留；日志路径供日志模块使用
+        settings.set('data_file_encoding', self.encoding_combo.currentText())
+        settings.set('mail_tracking_enabled', self.tracking_check.isChecked())
+        settings.set('log_path', self.log_edit.text().strip())
+        settings.save()
+        # 让默认发件人昵称在后续发送时立即生效
+        refreshRuntimeDefaults()
+        log.info('设置已保存：昵称=%s 批数=%d 编码=%s 追踪=%s 日志路径=%s',
+                 settings.get('default_from_name'),
+                 settings.get('preview_batch_size'),
+                 settings.get('data_file_encoding'),
+                 settings.get('mail_tracking_enabled'),
+                 settings.get('log_path'))
+        QMessageBox.information(self, '保存成功', '设置已保存并立即生效。')
+
+    def _browseLogPath(self):
+        """打开目录选择框，把所选目录写入日志路径输入框
+
+        首次浏览时以当前输入值或用户主目录作为起始目录。
+        """
+        start = self.log_edit.text().strip() or os.path.expanduser('~')
+        folder = QFileDialog.getExistingDirectory(self, '选择日志保存目录', start)
+        if folder:
+            self.log_edit.setText(folder)
+
+    def goBack(self):
+        """返回主页：关闭设置页回到主窗口"""
+        self.reject()
+
+
 class MainWindow(QMainWindow):
     """仿 QQ 邮箱网页版主窗口
 
@@ -474,6 +659,7 @@ class MainWindow(QMainWindow):
         self.resize(1120, 720)
         # 全局数据库引用（邮件记录读写统一走此实例）
         self.db = getDb()
+        log.info('主窗口初始化')
 
         # 中心容器：一个 QWidget 承载三栏布局；右栏内容用 QStackedWidget 管理多页切换
         center = QWidget()
@@ -629,7 +815,19 @@ class MainWindow(QMainWindow):
         v.addWidget(self.nav_list, 1)
 
         v.addStretch()
+        # ---- 窗口左下角：设置齿轮入口（点击打开铺满窗口的设置页）----
+        gear_btn = QPushButton('⚙ 设置')
+        gear_btn.setStyleSheet('QPushButton{background:transparent;color:#5f6b7a;'
+                               'border:0;text-align:left;padding:6px 8px;}'
+                               'QPushButton:hover{background:#e6efff;color:#1b7bf2;}')
+        gear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        gear_btn.clicked.connect(self.openSettings)
+        v.addWidget(gear_btn)
         return pane
+
+    def openSettings(self):
+        """打开铺满窗口的设置页（由左下角齿轮入口触发）"""
+        SettingsDialog(self).exec()
 
     def setActiveNav(self, menu_id):
         """按 id 设定当前选中的菜单项（高亮并同步列表页标题/数据）"""
@@ -2281,14 +2479,29 @@ class NormalPage(QWidget):
         self.manage_recipient_btn.clicked.connect(self.onManageRecipients)
         row1.addWidget(self.manage_recipient_btn)
         # 右侧可点击「抄送」「密送」「分别发送」标签
-        self.cc_link = QLabel('<a href="#" style="text-decoration:none;color:#666;">抄送</a>')
-        self.cc_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        self.cc_link.linkActivated.connect(self.toggleCcArea)
-        row1.addWidget(self.cc_link)
-        self.bcc_link = QLabel('<a href="#" style="text-decoration:none;color:#666;">密送</a>')
-        self.bcc_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        self.bcc_link.linkActivated.connect(self.toggleBccArea)
-        row1.addWidget(self.bcc_link)
+        # 抄送/密送：常规模式支持「抄送」「密送」可点展开输入行；
+        # 高级模式因逐封独立发送、一次仅发一封，本无 Cc/Bcc 概念，
+        # 由 _cc_bcc_supported=False 走 else 分支，隐藏入口并用说明标签提示，后续有需求再扩展。
+        if getattr(self, '_cc_bcc_supported', True):
+            # —— 常规模式：可点「抄送」「密送」展开对应输入行 ——
+            self.cc_link = QLabel('<a href="#" style="text-decoration:none;color:#666;">抄送</a>')
+            self.cc_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+            self.cc_link.linkActivated.connect(self.toggleCcArea)
+            row1.addWidget(self.cc_link)
+            self.bcc_link = QLabel('<a href="#" style="text-decoration:none;color:#666;">密送</a>')
+            self.bcc_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+            self.bcc_link.linkActivated.connect(self.toggleBccArea)
+            row1.addWidget(self.bcc_link)
+        else:
+            # —— 高级模式：不提供抄送/密送，用灰色说明标签提示原因 ——
+            self.cc_link = None
+            self.bcc_link = None
+            self.cc_bcc_hint = QLabel('抄送/密送暂不支持（逐封独立发送）')
+            self.cc_bcc_hint.setStyleSheet('color:#9aa4b2;font-size:12px;')
+            self.cc_bcc_hint.setToolTip(
+                '高级模式按收件人逐封独立发送，同一邮件仅发给当前收件人，'
+                '因此不提供抄送（Cc）与密送（Bcc）。如确有需要，可在后续版本扩展。')
+            row1.addWidget(self.cc_bcc_hint)
         # 分别发送勾选框
         self.separate_checkbox = QCheckBox('分别发送')
         self.separate_checkbox.stateChanged.connect(lambda s: self.separate_send_action.setChecked(bool(s)))
@@ -2538,6 +2751,12 @@ class NormalPage(QWidget):
         self.font_combo = QFontComboBox()
         self.font_combo.setEditable(False)
         self.font_combo.currentFontChanged.connect(self.onFontFamilyChanged)
+        # 显式高对比样式：保证下拉框与弹出列表在任何父级配色下均为白底深字、可读清晰
+        self.font_combo.setStyleSheet(
+            'QComboBox{background:#ffffff;color:#1f2328;border:1px solid #d0d7e2;'
+            'border-radius:4px;padding:2px 6px;}'
+            'QComboBox QAbstractItemView{background:#ffffff;color:#1f2328;'
+            'selection-background-color:#1b7bf2;selection-color:#ffffff;}')
         layout.addWidget(self.font_combo)
 
         # 字号下拉
@@ -2546,6 +2765,12 @@ class NormalPage(QWidget):
         self.size_combo.addItems(FONT_SIZES)
         self.size_combo.setCurrentText('12')
         self.size_combo.currentTextChanged.connect(self.onFontSizeChanged)
+        # 与字体下拉一致的高对比样式（白底深字）
+        self.size_combo.setStyleSheet(
+            'QComboBox{background:#ffffff;color:#1f2328;border:1px solid #d0d7e2;'
+            'border-radius:4px;padding:2px 6px;}'
+            'QComboBox QAbstractItemView{background:#ffffff;color:#1f2328;'
+            'selection-background-color:#1b7bf2;selection-color:#ffffff;}')
         layout.addWidget(self.size_combo)
 
         # 粗体（可切换）
@@ -2957,6 +3182,7 @@ class NormalPage(QWidget):
 
     def onSend(self):
         """收集页面参数，交给 NormalMode 实装发送（普通模式功能实装入口）"""
+        log.info('普通模式发起发送，收件人 %d 人', len(parseEmails(self.to_edit.text())))
         # 收件人为必填项
         to_list = parseEmails(self.to_edit.text())
         if not to_list:
@@ -3233,6 +3459,9 @@ class AdvancedPage(NormalPage):
     VARIABLE_PATTERN = re.compile(r'\$\$(.*?)\$\$')
     # 预览页分段生成：每批生成 PREVIEW_BATCH_SIZE 封邮件，避免大批量一次性生成卡死界面
     PREVIEW_BATCH_SIZE = 5
+    # 抄送/密送支持开关：高级模式按收件人逐封独立发送、一次仅发一封，本无 Cc/Bcc 概念，
+    # 故置 False 隐藏「抄送」「密送」入口（对照常规模式默认开启）；后续有需求再开启并扩展。
+    _cc_bcc_supported = False
 
     # ---------------- 任务机制 ----------------
     def startNewTask(self):
@@ -3247,6 +3476,8 @@ class AdvancedPage(NormalPage):
         default_name = '高级模式任务%d' % (self.db.countTasks() + 1)
         if hasattr(self, 'task_name_edit'):
             self.task_name_edit.setText(default_name)
+        # 预览批量生成邮件数：进入新任务时按用户设置刷新（原为类属性写死 5）
+        self.PREVIEW_BATCH_SIZE = int(settings.get('preview_batch_size'))
         # 当前编辑中任务的数据库 id（草稿恢复进入时为该草稿任务 id，新任务为 None）
         self._current_task_id = None
         # ---- 清空上一任务残留的编辑内容（避免新任务打开时带旧数据）----
@@ -4168,6 +4399,12 @@ class AdvancedPage(NormalPage):
             QMessageBox.warning(self, '部分发送失败',
                                 '成功 %d 封，失败 %d 封。可点击「重发失败邮件」重试失败的邮件。'
                                 % (ok_cnt, fail_cnt))
+        # 全部发送成功后清空本次预览/发送内存缓存：收件人/正文等个人数据不残留于内存；
+        # 若有失败则保留内存待「重发失败邮件」。历史已由 _recordSentTask 加密落库，可从列表回看。
+        if fail_cnt == 0:
+            self._preview_mails = []
+            self._send_ready_items = []
+            self._send_status = []
 
     def _onRetryFailed(self):
         """「重发失败邮件」点击：仅对状态为失败的邮件再次批量发送"""

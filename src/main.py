@@ -11,11 +11,19 @@ import sys
 
 from PyQt6.QtWidgets import QApplication
 from path_manager import PathManager
-from GUI.MainGUI import MainWindow
 
 # 统一通过 PathManager 定位源码包根目录（开发=src，打包=_MEIPASS），
 # 追加到 sys.path，保证「GUI」「Email」包在两种环境下都能被导入。
 sys.path.insert(0, str(PathManager.source_root()))
+# 另将项目根目录（source_root 的上一级）加入 sys.path，使项目根下的 option 设置包可被导入。
+sys.path.insert(0, str(PathManager.source_root().parent))
+
+# 日志系统：在导入业务模块之前初始化，使后续所有模块都能直接使用日志
+from logger import setupLogging, getLogger
+setupLogging()
+log = getLogger(__name__)
+
+from GUI.MainGUI import MainWindow
 
 
 def main():
@@ -23,15 +31,18 @@ def main():
 
     调用位置：src/GUI/MainGUI.py 中的 MainWindow（主窗口类）
     """
+    log.info('程序启动')
     # 创建应用实例，管理全局事件循环与资源
     app = QApplication(sys.argv)
     # 创建主窗口（含普通模式/高级模式入口页）
     window = MainWindow()
     # 显示主窗口
     window.show()
+    log.info('主窗口已显示，进入事件循环')
     # 进入事件循环，直到窗口关闭后退出，并以返回值作为进程退出码
-    sys.exit(app.exec())
-
+    ret = app.exec()
+    log.info('程序退出，退出码: %s', ret)
+    sys.exit(ret)
 
 
 if __name__ == '__main__':
@@ -39,7 +50,8 @@ if __name__ == '__main__':
         # 启动 GUI 主程序
         main()
     except Exception as e:
-        # 主流程异常兜底：打印错误并提示用户
+        # 主流程异常兜底：记录错误日志并提示用户
+        log.critical('程序崩溃: %s', e, exc_info=True)
         print(f"程序出错: {e}")
         # 发生异常时暂停，便于在终端查看错误信息而不闪退
         input("按 Enter 键退出...")

@@ -13,6 +13,8 @@ env/
 
 # ---- 敏感配置：SMTP 账号密码（真实凭据不入库）----
 config.local
+# 加密后的凭据文件（虽为密文，仍不入库以防密钥+密文同仓被拼出）
+credentials.enc
 
 # ---- IDE ----
 .idea/
@@ -28,6 +30,23 @@ data/
 *.exe
 *.spec
 
+# ---- C 扩展 / 混淆 / 构建临时产物（本地编译，不入库）----
+*.pyd
+*.so
+release_obf/
+src/security/build/
+src/security/cred_app.c
+
 # ---- 本地资料/测试（含真实 SMTP 凭据，勿入库）----
 /doc/
 /阿里云邮件推送/
+
+# ---- 用户本地设置 / 运行日志（机器相关，不入库）----
+settings.json
+logs/
+pyarmor.bug.log
+src/_steps.py
+test/
+
+# ---- 加密实现源码与产物（含密钥分片，整体不入库；发布时仅随包分发编译好的 .pyd 与 .enc）----
+src/security/

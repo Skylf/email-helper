@@ -8,6 +8,7 @@
 #       普通模式一次构建一封邮件，高级模式由上层循环调用本类实现批量差异化发送。
 
 import os
+import sys
 import smtplib
 import time
 import traceback
@@ -18,6 +19,10 @@ from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate, make_msgid
+
+# 日志系统：引入 logger，记录 SMTP 连接与发送各阶段日志
+from logger import getLogger
+log = getLogger(__name__)
 
 # SMTP 服务器地址（阿里云邮件推送，华东1 杭州）
 SMTP_HOST = 'smtpdm.aliyun.com'
@@ -41,36 +46,64 @@ BASE64_INFLATE = 1.35
 EMAIL_OVERHEAD = 128 * 1024
 
 
-def loadSmtpCredentials():
-    """从本地配置文件读取 SMTP 账号密码（不把凭据提交进公开仓库）
+# ============ SMTP 凭据防泄漏加固（C 扩展承载解密 + 密钥分片）==================
+# 说明：
+#   - 真实账号/密码经 store_credentials.py 加密后存于 credentials.enc（不入库）。
+#   - 解密逻辑与密钥分片A/盐固化在 src/security/cred_app.pyd（C 二进制）。
+#   - 密钥分片B由调用方（本文件）持有，运行期拼装完整密钥后解密，全程内存短存活。
+# 这样：源码与仓库中均不存在明文密码，字符串扫描与反编译直接剥离均无法直接取得凭据。
+# 密钥分片B（片段，与 store_credentials.py 保持一致，缺片无法还原）
+CRED_KEY_PART_B = b'Ua4#p9'
 
-    优先读取项目根下的 config.local（含真实凭据，已被 .gitignore 排除不入库）；
-    若缺失则回退读取 config.example（占位符），供开发者复制改名后填写。
+
+def loadSmtpCredentials():
+    """加载 SMTP 账号密码（仅经 C 扩展解密加密凭据，不再读明文配置文件）
+
+    加载优先级：
+      1. credentials.enc + cred_app.pyd：真实凭据加密存储，解密后返回（唯一来源）。
+      （为满足「程序内不留明文」要求，已移除 config.local/config.example 明文回退）
 
     返回：
-        tuple<str,str>：(发信账号, 密码)；文件不存在或读取失败时返回空串
+        tuple<str,str>：(发信账号, 密码)；加密凭据缺失或解密失败时返回空串
     """
-    # 统一经 PathManager.root() 定位数据根（开发=项目根，打包=exe 目录）
+    # 经 C 扩展解密加密凭据文件（credentials.enc 与 .pyd 同目录于 src/security）
+    return _decryptFromCredentialFile() or ('', '')
+
+
+def _decryptFromCredentialFile():
+    """从加密凭据文件读取并解密 SMTP 账号密码（经 C 扩展 cred_app.pyd）
+
+    解密流程：
+      1. 定位加密目录：以 cred_app 模块（cred_app.pyd）所在目录为准，
+         credentials.enc 与其放于同一目录（src/security）。
+      2. 若加密文件或 C 扩展缺失 => 返回 None（走配置回退）。
+      3. 读取 base64 密文 -> 调 cred_app.decrypt_credentials 还原明文字节。
+      4. 按「账号\\n密码」拆分返回；任一步异常则安全回退 None。
+
+    返回：
+        tuple<str,str>|None：解密成功返回 (账号, 密码)；失败返回 None
+    """
+    # 导入 C 扩展（编译产物 cred_app.pyd，与加密文件同目录；缺失则走回退）
+    import base64 as _b64
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + '/../security')
     try:
-        from path_manager import PathManager
-        root_dir = PathManager.root()
-    except ImportError:
-        # 兜底：按本文件位置推算项目根（src/Email -> src -> 项目根）
-        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    # 依次尝试：本地真实配置 → 示例模板
-    for name in ('config.local', 'config.example'):
-        path = os.path.join(os.fspath(root_dir), name)
-        if not os.path.exists(path):
-            continue
-        try:
-            import json
-            with open(path, 'r', encoding='utf-8') as fobj:
-                data = json.load(fobj)
-            return (data.get('SMTP_USERNAME', '') or '',
-                    data.get('SMTP_PASSWORD', '') or '')
-        except (OSError, ValueError):
-            continue
-    return ('', '')
+        import cred_app
+        # 加密目录 = .pyd 所在目录；打包后 .pyd 与 .enc 放同目录即可命中
+        crypto_dir = os.path.dirname(os.path.abspath(cred_app.__file__))
+        enc_path = os.path.join(crypto_dir, 'credentials.enc')
+        if not os.path.exists(enc_path):
+            return None
+        with open(enc_path, 'r', encoding='ascii') as fobj:
+            cipher = _b64.b64decode(fobj.read().strip())
+        plain = cred_app.decrypt_credentials(cipher, CRED_KEY_PART_B)
+        # 密文格式：账号\n密码
+        username, password = plain.split('\n', 1)
+        if username and password:
+            return (username, password)
+    except Exception as exc:
+        # 解密任一步失败：记录日志并安全回退，避免程序崩溃
+        log.warning('SMTP 凭据解密失败，回退明文配置: %s', exc)
+    return None
 
 
 # 发信账号与密码：从本地配置加载（不入库），避免公开 GitHub 仓库泄露凭据
@@ -381,8 +414,8 @@ class LEmail:
                 return client
             except Exception as error:
                 last_error = error
-                print('SMTP 连接失败（第 %d/%d 次）: %s' % (
-                    attempt + 1, SMTP_MAX_RETRY, error))
+                log.warning('SMTP 连接失败（第 %d/%d 次）: %s',
+                            attempt + 1, SMTP_MAX_RETRY, error)
                 # 非最后一次尝试前稍作等待后重试
                 if attempt < SMTP_MAX_RETRY - 1:
                     time.sleep(SMTP_RETRY_INTERVAL)
@@ -442,16 +475,14 @@ class LEmail:
         # 发送前校验收件人数/附件数：超限则不建立连接，直接拒绝
         over_limits, limit_msg = self.checkLimits()
         if over_limits:
-            print('邮件发送失败：%s' % limit_msg)
+            log.error('邮件发送失败（超限）：%s', limit_msg)
             return False
         # 发送前校验邮件总大小：超限则不建立连接，直接拒绝（阿里云限制 15MB）
         over_limit, est_size, max_size = self.checkEmailSize()
         if over_limit:
-            print('邮件发送失败：不支持发送超大附件。当前邮件约 %.1f MB，'
-                  '超过阿里云邮件推送的 %.1f MB 上限。\n'
-                  '建议将大文件上传到网盘/云盘获取分享链接，'
-                  '再在正文用「超链接」方式插入后发送。' % (
-                      est_size / 1024 / 1024, max_size / 1024 / 1024))
+            log.error('邮件发送失败：不支持发送超大附件。当前邮件约 %.1f MB，'
+                      '超过阿里云邮件推送的 %.1f MB 上限。',
+                      est_size / 1024 / 1024, max_size / 1024 / 1024)
             return False
         # 记录最后一次瞬时错误（重试耗尽时用于输出完整堆栈）
         last_transient = None
@@ -468,6 +499,8 @@ class LEmail:
                 # 正常退出 SMTP 会话
                 client.quit()
                 client = None
+                # 日志脱敏：不打印发件人账号与收件人邮箱，仅记录成功与收件人数
+                log.info('邮件发送成功，收件人 %d 人', len(self.receivers))
                 return True
             except (
                 SSLWantWriteError, SSLWantReadError,
@@ -476,31 +509,34 @@ class LEmail:
             ) as error:
                 # 瞬时性/网络中断错误：记录并稍后重建连接重试
                 last_transient = error
-                print('SMTP 发送阶段失败（第 %d/%d 次）: %s' % (
-                    attempt + 1, SMTP_MAX_RETRY, error))
+                log.warning('SMTP 发送阶段失败（第 %d/%d 次）: %s',
+                            attempt + 1, SMTP_MAX_RETRY, error)
                 time.sleep(SMTP_RETRY_INTERVAL)
             except smtplib.SMTPConnectError as error:
-                print('邮件发送失败，连接失败:', error.smtp_code, error.smtp_error)
+                log.error('邮件发送失败，连接失败: %s %s',
+                          error.smtp_code, error.smtp_error)
                 break
             except smtplib.SMTPAuthenticationError as error:
-                print('邮件发送失败，认证错误:', error.smtp_code, error.smtp_error)
+                log.error('邮件发送失败，认证错误: %s %s',
+                          error.smtp_code, error.smtp_error)
                 break
             except smtplib.SMTPSenderRefused as error:
-                print('邮件发送失败，发件人被拒绝:', error.smtp_code, error.smtp_error)
+                log.error('邮件发送失败，发件人被拒绝: %s %s',
+                          error.smtp_code, error.smtp_error)
                 break
             except smtplib.SMTPRecipientsRefused as error:
-                print('邮件发送失败，收件人被拒绝:', error.smtp_code, error.smtp_error)
+                log.error('邮件发送失败，收件人被拒绝: %s %s',
+                          error.smtp_code, error.smtp_error)
                 break
             except smtplib.SMTPDataError as error:
-                print('邮件发送失败，数据接收拒绝:', error.smtp_code, error.smtp_error)
+                log.error('邮件发送失败，数据接收拒绝: %s %s',
+                          error.smtp_code, error.smtp_error)
                 break
             except smtplib.SMTPException as error:
-                print('邮件发送失败(SMTP):', str(error))
-                self._printTraceback()
+                log.error('邮件发送失败(SMTP): %s', str(error), exc_info=True)
                 break
             except Exception as error:
-                print('邮件发送异常:', str(error))
-                self._printTraceback()
+                log.error('邮件发送异常: %s', str(error), exc_info=True)
                 break
             finally:
                 # 出错时确保断开连接，避免残留 socket
@@ -509,9 +545,10 @@ class LEmail:
                         client.close()
                     except Exception:
                         pass
-        # 重试耗尽仍未成功：打印最后一次瞬时错误的完整堆栈
+        # 重试耗尽仍未成功：记录最后一次瞬时错误的完整堆栈
         if last_transient is not None:
-            traceback.print_exception(type(last_transient), last_transient, last_transient.__traceback__)
+            log.error('SMTP 发送重试耗尽，最后一次错误: %s',
+                      last_transient, exc_info=True)
         return False
 
     def _printTraceback(self):
